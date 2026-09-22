@@ -6,38 +6,31 @@ Son objectif est de surveiller une infrastructure Linux, de collecter ses métri
 
 ## État actuel
 
-Phase 0 — MVP minimal de bout en bout terminé.
+- **Phase 0 terminée** : diagnostic depuis le terminal avec `copilot_v0.py`.
+- **Phase 1 terminée** : API FastAPI avec collecte des données système et diagnostic Gemini.
+- **Tests automatiques** : 3 tests réussis pour vérifier l’API sans appeler Gemini.
 
-Le programme peut actuellement :
-
-- collecter l’utilisation du CPU ;
-- collecter l’utilisation de la mémoire RAM ;
-- collecter l’espace disque ;
-- récupérer les avertissements et erreurs avec `journalctl` ;
-- structurer les données au format JSON ;
-- construire un prompt de diagnostic ;
-- demander une confirmation avant tout envoi ;
-- appeler l’API Gemini ;
-- afficher un diagnostic dans le terminal ;
-- gérer les principales erreurs de configuration et d’API.
+L’application collecte un instantané de l’utilisation du CPU, de la mémoire et du disque. Elle peut aussi récupérer des logs système. Le diagnostic par Gemini nécessite une confirmation explicite ; l’envoi des logs est désactivé par défaut.
 
 ## Architecture actuelle
 
 ```text
-Machine Linux
-      ↓
-psutil + journalctl
-      ↓
-Dictionnaire Python
-      ↓
-JSON
-      ↓
-Prompt structuré
-      ↓
-Gemini API
-      ↓
-Diagnostic dans le terminal
+Machine Linux / WSL
+        │
+        ▼
+app/collectors/system.py ── collecte des métriques et des logs
+        │
+        ├──► copilot_v0.py ── utilisation dans le terminal
+        │
+        └──► app/main.py ── API FastAPI
+                  │
+                  ├── app/core/config.py ── configuration et clé API
+                  └── app/services/diagnosis.py ── prompt et appel Gemini
+
+tests/test_api.py ── tests automatiques de l’API
 ```
+
+Le script terminal et l’API réutilisent le même collecteur : on évite de maintenir deux versions différentes de la collecte.
 
 ## Technologies utilisées
 
@@ -95,6 +88,51 @@ python copilot_v0.py
 ```
 
 Le programme affiche les données qui seront envoyées et demande une confirmation explicite avant l’appel à Gemini.
+
+
+## API FastAPI
+
+Démarrer le serveur depuis la racine du projet :
+
+```bash
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+La documentation interactive est disponible sur <http://127.0.0.1:8000/docs>.
+
+| Route | Rôle |
+| --- | --- |
+| `GET /health` | Vérifier que l’API répond. |
+| `GET /metrics` | Consulter un instantané des données système. |
+| `POST /diagnose` | Demander un diagnostic à Gemini. |
+
+Exemple de corps pour `POST /diagnose` :
+
+```json
+{
+  "confirm_external_send": true,
+  "include_logs": false
+}
+```
+
+`confirm_external_send` doit être `true` pour autoriser l’appel externe. Quand `include_logs` vaut `false`, les logs ne sont pas inclus dans le prompt envoyé à Gemini.
+
+## Tests
+
+Installer les dépendances de développement :
+
+```bash
+python -m pip install -r requirements-dev.txt
+```
+
+Lancer les tests depuis la racine du projet :
+
+```bash
+python -m pytest -q
+```
+
+Les tests simulent l’appel Gemini : ils vérifient le comportement de l’API sans envoyer de données et sans consommer de quota.
+
 
 ## Sécurité
 
