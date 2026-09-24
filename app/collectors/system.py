@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 import subprocess
 
 import psutil
@@ -56,7 +56,7 @@ def collect_system_logs(limit: int = 10) -> list[str]:
         return ["La récupération des logs a dépassé 5 secondes."]
 
 
-def collect_system_metrics() -> dict:
+def collect_system_metrics(include_logs: bool = True) -> dict:
     """Collecte les principales métriques de la machine."""
 
     cpu_percent = psutil.cpu_percent(interval=1)
@@ -64,7 +64,7 @@ def collect_system_metrics() -> dict:
     disk = psutil.disk_usage("/")
 
     return {
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
         "cpu": {
             "percent": cpu_percent,
         },
@@ -80,5 +80,5 @@ def collect_system_metrics() -> dict:
             "free_gb": bytes_to_gb(disk.free),
             "percent": disk.percent,
         },
-        "logs": collect_system_logs(limit=10),
+        "logs": collect_system_logs(limit=10) if include_logs else [],
     }

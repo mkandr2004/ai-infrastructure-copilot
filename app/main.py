@@ -1,12 +1,17 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from app.collectors.system import collect_system_metrics
 from app.core.config import get_settings
+from app.db.database import get_db
+from app.models.metric import MetricSnapshot
+from app.schemas.metric import MetricSnapshotResponse
 from app.services.diagnosis import (
     build_diagnostic_prompt,
     request_diagnostic,
 )
+from app.services.metrics import list_metric_snapshots
 
 
 app = FastAPI(title="AI Infrastructure Copilot")
@@ -32,6 +37,18 @@ def health() -> dict[str, str]:
 @app.get("/metrics")
 def get_metrics() -> dict:
     return collect_system_metrics()
+
+
+@app.get(
+    "/metrics/history",
+    response_model=list[MetricSnapshotResponse],
+)
+
+def get_metrics_history(
+    limit: int = Query(default=100, ge=1, le=1000),
+    session: Session = Depends(get_db),
+) -> list[MetricSnapshot]:
+    return list_metric_snapshots(session, limit)
 
 
 @app.post("/diagnose", response_model=DiagnoseResponse)
