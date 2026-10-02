@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+from app.rag.retriever import KnowledgeMatch
 
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -136,3 +137,217 @@ def test_metrics_history_returns_saved_snapshots():
         fake_session,
         1,
     )
+
+def test_diagnose_requires_description_for_knowledge_search():
+    with (
+        patch("app.main.create_qdrant_client") as mock_create_client,
+        patch("app.main.request_diagnostic") as mock_gemini,
+    ):
+        response = client.post(
+            "/diagnose",
+            json={
+                "confirm_external_send": True,
+                "include_logs": False,
+                "use_knowledge": True,
+            },
+        )
+
+    assert response.status_code == 400
+    assert (
+        response.json()["detail"]
+        == (
+            "Une description du problème est nécessaire "
+            "pour rechercher dans la documentation."
+        )
+    )
+
+    mock_create_client.assert_not_called()
+    mock_gemini.assert_not_called()
+
+
+def test_diagnose_uses_retrieved_knowledge():
+    fake_data = {
+        "timestamp": "2026-10-02T10:00:00",
+        "cpu": {"percent": 95.0},
+        "memory": {"percent": 40.0},
+        "disk": {"percent": 30.0},
+        "logs": [],
+    }
+
+    fake_settings = SimpleNamespace(
+        gemini_api_key=SecretStr("cle-fictive-pour-test"),
+        gemini_model="modele-de-test",
+    )
+
+    fake_client = MagicMock()
+
+    fake_matches = [
+        KnowledgeMatch(
+            point_id="cpu-1",
+            score=0.82,
+            source="cpu.md",
+            title="Diagnostic CPU — Vérifications",
+            text="Utiliser top pour identifier les processus actifs.",
+            chunk_index=0,
+        )
+    ]
+
+    with (
+        patch("app.main.get_settings", return_value=fake_settings),
+        patch("app.main.collect_system_metrics", return_value=fake_data),
+        patch(
+            "app.main.create_qdrant_client",
+            return_value=fake_client,
+        ),
+        patch(
+            "app.main.search_knowledge",
+            return_value=fake_matches,
+        ) as mock_search,
+        patch(
+            "app.main.request_diagnostic",
+            return_value="Diagnostic enrichi",
+        ) as mock_gemini,
+    ):
+        response = client.post(
+            "/diagnose",
+            json={
+                "confirm_external_send": True,
+                "include_logs": False,
+                "use_knowledge": True,
+                "problem_description": (
+                    "Le processeur reste à 95 %."
+                ),
+            },
+        )
+
+    assert response.status_code == 200
+
+    response_data = response.json()
+
+    assert response_data["diagnosis"] == "Diagnostic enrichi"
+    assert response_data["knowledge_used"] is True
+    assert response_data["knowledge_sources"] == ["cpu.md"]
+
+    mock_search.assert_called_once_with(
+        fake_client,
+        fake_settings,
+        "Le processeur reste à 95 %.",
+    )
+
+    fake_client.close.assert_called_once_with()
+
+    prompt_sent = mock_gemini.call_args.args[0]
+
+    assert "Le processeur reste à 95 %." in prompt_sent
+    assert "cpu.md" in prompt_sent
+    assert "Utiliser top" in prompt_sent
+
+def test_diagnose_continues_without_relevant_knowledge():
+    fake_data = {
+        "timestamp": "2026-10-02T10:00:00+00:00",
+        "cpu": {"percent": 5.0},
+        "memory": {"percent": 30.0},
+        "disk": {"percent": 20.0},
+        "logs": [],
+    }
+
+    fake_settings = SimpleNamespace(
+        gemini_api_key=SecretStr("cle-fictive-pour-test"),
+        gemini_model="modele-de-test",
+    )
+
+    fake_client = MagicMock()
+
+    with (
+        patch("app.main.get_settings", return_value=fake_settings),
+        patch("app.main.collect_system_metrics", return_value=fake_data),
+        patch(
+            "app.main.create_qdrant_client",
+            return_value=fake_client,
+        ),
+        patch(
+            "app.main.search_knowledge",
+            return_value=[],
+        ),
+        patch(
+            "app.main.request_diagnostic",
+            return_value="Diagnostic sans contexte",
+        ) as mock_gemini,
+    ):
+        response = client.post(
+            "/diagnose",
+            json={
+                "confirm_external_send": True,
+                "include_logs": False,
+                "use_knowledge": True,
+                "problem_description": (
+                    "Comment renouveler un certificat TLS ?"
+                ),
+            },
+        )
+
+    assert response.status_code == 200
+
+    response_data = response.json()
+
+    assert response_data["knowledge_used"] is False
+    assert response_data["knowledge_sources"] == []
+    assert response_data["diagnosis"] == "Diagnostic sans contexte"
+
+    fake_client.close.assert_called_once_with()
+
+    prompt_sent = mock_gemini.call_args.args[0]
+
+    assert "Comment renouveler un certificat TLS ?" in prompt_sent
+    assert "<knowledge_context>" not in prompt_sent
+
+
+def test_diagnose_returns_error_when_knowledge_search_fails():
+    fake_data = {
+        "timestamp": "2026-10-02T10:00:00+00:00",
+        "cpu": {"percent": 5.0},
+        "memory": {"percent": 30.0},
+        "disk": {"percent": 20.0},
+        "logs": [],
+    }
+
+    fake_settings = SimpleNamespace(
+        gemini_api_key=SecretStr("cle-fictive-pour-test"),
+        gemini_model="modele-de-test",
+    )
+
+    fake_client = MagicMock()
+
+    with (
+        patch("app.main.get_settings", return_value=fake_settings),
+        patch("app.main.collect_system_metrics", return_value=fake_data),
+        patch(
+            "app.main.create_qdrant_client",
+            return_value=fake_client,
+        ),
+        patch(
+            "app.main.search_knowledge",
+            side_effect=RuntimeError("Qdrant indisponible"),
+        ),
+        patch("app.main.request_diagnostic") as mock_gemini,
+    ):
+        response = client.post(
+            "/diagnose",
+            json={
+                "confirm_external_send": True,
+                "include_logs": False,
+                "use_knowledge": True,
+                "problem_description": (
+                    "Le processeur reste à 95 %."
+                ),
+            },
+        )
+
+    assert response.status_code == 502
+    assert (
+        response.json()["detail"]
+        == "La recherche documentaire a échoué."
+    )
+
+    fake_client.close.assert_called_once_with()
+    mock_gemini.assert_not_called()

@@ -1,11 +1,14 @@
 from fastapi import Depends, FastAPI, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.collectors.system import collect_system_metrics
 from app.core.config import get_settings
 from app.db.database import get_db
 from app.models.metric import MetricSnapshot
+from app.rag.context import build_knowledge_context
+from app.rag.retriever import search_knowledge
+from app.rag.vector_store import create_qdrant_client
 from app.schemas.metric import MetricSnapshotResponse
 from app.services.diagnosis import (
     build_diagnostic_prompt,
@@ -20,6 +23,11 @@ app = FastAPI(title="AI Infrastructure Copilot")
 class DiagnoseRequest(BaseModel):
     confirm_external_send: bool = False
     include_logs: bool = False
+    use_knowledge: bool = False
+    problem_description: str | None = Field(
+        default=None,
+        max_length=2000,
+    )
 
 
 class DiagnoseResponse(BaseModel):
@@ -27,6 +35,8 @@ class DiagnoseResponse(BaseModel):
     model: str
     diagnosis: str
     logs_sent: bool
+    knowledge_used: bool
+    knowledge_sources: list[str]
 
 
 @app.get("/health")
@@ -43,7 +53,6 @@ def get_metrics() -> dict:
     "/metrics/history",
     response_model=list[MetricSnapshotResponse],
 )
-
 def get_metrics_history(
     limit: int = Query(default=100, ge=1, le=1000),
     session: Session = Depends(get_db),
@@ -57,6 +66,19 @@ def diagnose(request: DiagnoseRequest) -> DiagnoseResponse:
         raise HTTPException(
             status_code=400,
             detail="Confirme explicitement l'envoi à Gemini.",
+        )
+
+    problem_description = (
+        request.problem_description or ""
+    ).strip()
+
+    if request.use_knowledge and not problem_description:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Une description du problème est nécessaire "
+                "pour rechercher dans la documentation."
+            ),
         )
 
     settings = get_settings()
@@ -73,7 +95,51 @@ def diagnose(request: DiagnoseRequest) -> DiagnoseResponse:
     if not request.include_logs:
         system_data["logs"] = []
 
-    prompt = build_diagnostic_prompt(system_data)
+    knowledge_context = ""
+    knowledge_sources: list[str] = []
+
+    if request.use_knowledge:
+        try:
+            qdrant_client = create_qdrant_client(settings)
+
+            try:
+                matches = search_knowledge(
+                    qdrant_client,
+                    settings,
+                    problem_description,
+                )
+            finally:
+                qdrant_client.close()
+
+        except ValueError as error:
+            raise HTTPException(
+                status_code=503,
+                detail=str(error),
+            ) from None
+        except Exception as error:
+            print(
+                "Erreur de recherche documentaire : "
+                f"{type(error).__name__}"
+            )
+            raise HTTPException(
+                status_code=502,
+                detail="La recherche documentaire a échoué.",
+            ) from None
+
+        knowledge_context = build_knowledge_context(matches)
+
+        knowledge_sources = list(
+            dict.fromkeys(
+                match.source
+                for match in matches
+            )
+        )
+
+    prompt = build_diagnostic_prompt(
+        system_data,
+        knowledge_context=knowledge_context,
+        problem_description=problem_description,
+    )
 
     try:
         diagnosis = request_diagnostic(prompt, settings)
@@ -95,4 +161,6 @@ def diagnose(request: DiagnoseRequest) -> DiagnoseResponse:
         model=settings.gemini_model,
         diagnosis=diagnosis,
         logs_sent=request.include_logs,
+        knowledge_used=bool(knowledge_context),
+        knowledge_sources=knowledge_sources,
     )
