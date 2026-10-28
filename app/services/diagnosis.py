@@ -1,6 +1,7 @@
 import json
 
 from google import genai
+from google.genai import types
 
 from app.core.config import Settings
 
@@ -107,7 +108,17 @@ def request_diagnostic(prompt: str, settings: Settings) -> str:
     }:
         raise ValueError("Configure une vraie clé GEMINI_API_KEY.")
 
-    with genai.Client(api_key=api_key) as client:
+    with genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(
+            timeout=settings.gemini_timeout_ms,
+            retry_options=types.HttpRetryOptions(
+                attempts=(
+                    settings.gemini_retry_attempts
+                ),
+            ),
+        ),
+    ) as client:
         response = client.interactions.create(
             model=settings.gemini_model,
             input=prompt,

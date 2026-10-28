@@ -2,7 +2,7 @@
 
 AI Infrastructure Copilot est un projet personnel orienté AI Engineering, MLOps et observabilité.
 
-Son objectif est de surveiller une infrastructure Linux, de collecter ses métriques et ses logs, de conserver un historique dans PostgreSQL, puis d’utiliser un modèle d’intelligence artificielle enrichi par une documentation technique locale pour produire des diagnostics prudents et structurés.
+Son objectif est de surveiller une infrastructure Linux, de collecter ses métriques et ses logs, de conserver un historique dans PostgreSQL, puis d’utiliser un modèle d’intelligence artificielle enrichi par une documentation technique locale pour produire des diagnostics prudents et structurés. Les incidents diagnostiqués peuvent être mémorisés temporairement dans Redis.
 
 ## État actuel
 
@@ -10,13 +10,16 @@ Son objectif est de surveiller une infrastructure Linux, de collecter ses métri
 - **Phase 1 terminée** : API FastAPI avec collecte système et diagnostic Gemini.
 - **Phase 2 terminée** : stockage PostgreSQL, historique HTTP et surveillance périodique.
 - **Phase 3 terminée** : RAG documentaire local avec embeddings Gemini et Qdrant.
-- **Tests automatiques** : 32 tests vérifient l’API, PostgreSQL, la surveillance et le pipeline RAG sans consommer de quota Gemini.
+- **Phase 4 terminée** : mémoire temporaire des incidents avec Redis et expiration automatique.
+- **Tests automatiques** : 48 tests vérifient l’API, PostgreSQL, la surveillance, le pipeline RAG et la mémoire Redis sans consommer de quota Gemini.
 
 L’application collecte l’utilisation du CPU, de la mémoire et du disque. Elle peut aussi récupérer les avertissements et erreurs de `journalctl`.
 
 Les métriques peuvent être enregistrées périodiquement dans PostgreSQL puis consultées avec l’API. Les logs ne sont jamais enregistrés dans PostgreSQL.
 
 Le diagnostic peut rechercher des passages pertinents dans une documentation locale consacrée au CPU, à la mémoire et au disque. Les passages retrouvés dans Qdrant sont ajoutés au prompt comme références techniques, sans être considérés comme des faits observés.
+
+À la demande de l’utilisateur, le résultat d’un diagnostic peut être enregistré dans Redis avec un résumé des métriques et les sources documentaires utilisées. Les logs bruts ne sont jamais enregistrés dans l’incident.
 
 Les appels à Gemini nécessitent toujours une confirmation explicite. L’envoi des logs est désactivé par défaut.
 
@@ -64,6 +67,8 @@ Les appels à Gemini nécessitent toujours une confirmation explicite. L’envoi
             │       ├──► GET /health
             │       ├──► GET /metrics
             │       ├──► GET /metrics/history
+            │       ├──► GET /incidents
+            │       ├──► GET /incidents/{incident_id}
             │       └──► POST /diagnose
             │                    │
             │                    ▼
@@ -72,6 +77,14 @@ Les appels à Gemini nécessitent toujours une confirmation explicite. L’envoi
             │                    │
             │                    ▼
             │             Gemini Diagnostic
+            │                    │
+            │                    │ enregistrement optionnel
+            │                    ▼
+            │          app/memory/incidents.py
+            │                    │
+            │                    ▼
+            │                  Redis
+            │          incidents temporaires + TTL
             │
             └──► app/monitoring.py
                  collecte périodique sans logs
@@ -89,7 +102,7 @@ Le script terminal, l’API et la surveillance réutilisent le même collecteur 
 
 La surveillance est exécutée séparément du serveur FastAPI afin d’éviter de lancer plusieurs boucles de collecte si l’API utilise plusieurs processus.
 
-PostgreSQL conserve les mesures numériques dans la table `metric_snapshots`. Qdrant conserve les vecteurs de la documentation technique. Ces deux stockages ont donc des responsabilités différentes.
+PostgreSQL conserve l’historique des mesures numériques dans la table `metric_snapshots`. Qdrant conserve les vecteurs de la documentation technique. Redis conserve temporairement les incidents diagnostiqués. Chaque stockage a donc une responsabilité différente.
 
 ## Organisation du RAG
 
@@ -108,6 +121,20 @@ PostgreSQL conserve les mesures numériques dans la table `metric_snapshots`. Qd
 
 Les identifiants des passages sont déterministes. Une nouvelle indexation remplace les passages existants portant le même identifiant et supprime les anciens points qui ne correspondent plus aux documents actuels.
 
+## Mémoire des incidents
+
+| Fichier | Rôle |
+| --- | --- |
+| `app/memory/redis_client.py` | Crée le client Redis et vérifie la connexion. |
+| `app/memory/incidents.py` | Enregistre, lit et liste les incidents avec expiration automatique. |
+| `app/schemas/incident.py` | Définit la structure validée d’un incident. |
+
+Un incident contient notamment sa description, la date de collecte, un résumé CPU/mémoire/disque, le modèle utilisé, le diagnostic et les sources documentaires. Il ne contient pas les logs bruts.
+
+L’enregistrement est optionnel et doit être demandé avec `save_incident: true`. Par défaut, un incident expire après 604 800 secondes, soit sept jours. Redis supprime alors automatiquement sa clé et l’application nettoie les références expirées de l’index lors des lectures suivantes.
+
+Redis est une mémoire temporaire et non l’historique permanent des métriques. PostgreSQL reste responsable des mesures collectées dans le temps.
+
 ## Technologies utilisées
 
 - Python
@@ -119,6 +146,8 @@ Les identifiants des passages sont déterministes. Une nouvelle indexation rempl
 - Qdrant local
 - Google Gen AI SDK
 - Gemini Embeddings
+- Redis
+- redis-py
 - pytest et TestClient
 - Git
 
@@ -165,7 +194,23 @@ Quitter la console PostgreSQL :
 
 Le mot de passe choisi ici devra être recopié dans `POSTGRES_PASSWORD` dans le fichier `.env`.
 
-### 5. Configurer les variables d’environnement
+### 5. Installer et démarrer Redis
+
+Sous Ubuntu ou WSL, installer Redis selon la documentation officielle, puis démarrer le service :
+
+    sudo service redis-server start
+
+Vérifier que le serveur répond :
+
+    redis-cli ping
+
+Résultat attendu :
+
+    PONG
+
+Redis est nécessaire uniquement pour enregistrer et consulter les incidents temporaires.
+
+### 6. Configurer les variables d’environnement
 
 Copier le modèle de configuration :
 
@@ -179,6 +224,8 @@ Compléter ensuite `.env` :
     GEMINI_MODEL=gemini-3.8-flash
     GEMINI_EMBEDDING_MODEL=gemini-embedding-2
     EMBEDDING_DIMENSIONS=768
+    GEMINI_TIMEOUT_MS=30000
+    GEMINI_RETRY_ATTEMPTS=1
 
     # PostgreSQL
     POSTGRES_HOST=localhost
@@ -193,13 +240,25 @@ Compléter ensuite `.env` :
     KNOWLEDGE_PATH=knowledge
     RAG_SCORE_THRESHOLD=0.72
 
+    # Redis
+    REDIS_HOST=localhost
+    REDIS_PORT=6379
+    REDIS_DB=0
+    REDIS_PASSWORD=
+    REDIS_KEY_PREFIX=ai_copilot
+    INCIDENT_TTL_SECONDS=604800
+
 `GEMINI_API_KEY` est nécessaire pour les diagnostics, l’indexation et les recherches documentaires.
+
+`GEMINI_TIMEOUT_MS` limite la durée d’un appel Gemini et `GEMINI_RETRY_ATTEMPTS` limite les nouvelles tentatives automatiques du SDK.
 
 La configuration PostgreSQL est nécessaire pour charger l’API et utiliser la surveillance.
 
+La configuration Redis est nécessaire pour enregistrer ou consulter les incidents temporaires. Laisser `REDIS_PASSWORD` vide lorsque le serveur local n’exige pas d’authentification.
+
 Le fichier `.env` contient des secrets et ne doit jamais être ajouté à Git.
 
-### 6. Initialiser PostgreSQL
+### 7. Initialiser PostgreSQL
 
 Créer les tables absentes :
 
@@ -212,7 +271,7 @@ Résultat attendu :
 
 Cette commande conserve les tables et les données existantes. Elle crée uniquement les tables absentes.
 
-### 7. Préparer l’index documentaire
+### 8. Préparer l’index documentaire
 
 Afficher les passages qui seront traités sans effectuer d’appel externe :
 
@@ -278,6 +337,8 @@ La documentation interactive est disponible sur <http://127.0.0.1:8000/docs>.
 | `GET /metrics` | Consulter une mesure actuelle sans l’enregistrer. |
 | `GET /metrics/history` | Lire les instantanés enregistrés dans PostgreSQL. |
 | `POST /diagnose` | Demander un diagnostic Gemini, avec RAG optionnel. |
+| `GET /incidents` | Lister les incidents temporaires du plus récent au plus ancien. |
+| `GET /incidents/{incident_id}` | Lire un incident temporaire par son identifiant. |
 
 Consulter les dix mesures les plus récentes :
 
@@ -291,7 +352,8 @@ La valeur de `limit` doit être comprise entre `1` et `1000`. Les résultats son
       "confirm_external_send": true,
       "include_logs": false,
       "use_knowledge": false,
-      "problem_description": "Le serveur semble lent."
+      "problem_description": "Le serveur semble lent.",
+      "save_incident": false
     }
 
 ### Diagnostic enrichi par le RAG
@@ -300,10 +362,25 @@ La valeur de `limit` doit être comprise entre `1` et `1000`. Les résultats son
       "confirm_external_send": true,
       "include_logs": false,
       "use_knowledge": true,
-      "problem_description": "Le processeur reste à 95 %, comment identifier la cause ?"
+      "problem_description": "Le processeur reste à 95 %, comment identifier la cause ?",
+      "save_incident": true
     }
 
 `confirm_external_send` doit être `true` pour autoriser les appels externes.
+
+`save_incident` vaut `false` par défaut. Quand il vaut `true`, `problem_description` est obligatoire et le diagnostic réussi est enregistré dans Redis.
+
+La réponse contient alors :
+
+- `incident_saved`, qui indique si l’enregistrement Redis a réussi ;
+- `incident_id`, qui contient l’identifiant de l’incident enregistré ou `null`.
+
+Une indisponibilité de Redis n’annule pas un diagnostic Gemini déjà obtenu : la réponse conserve le diagnostic avec `incident_saved: false`.
+
+Consulter les incidents enregistrés :
+
+    curl "http://127.0.0.1:8000/incidents?limit=20"
+    curl "http://127.0.0.1:8000/incidents/IDENTIFIANT_INCIDENT"
 
 Quand `include_logs` vaut `false`, les logs ne sont pas inclus dans le prompt envoyé à Gemini.
 
@@ -331,7 +408,7 @@ Lancer les tests :
 
     python -m pytest -q
 
-Les 32 tests couvrent notamment :
+Les 48 tests couvrent notamment :
 
 - les routes principales de l’API ;
 - la confirmation obligatoire avant un appel externe ;
@@ -346,11 +423,15 @@ Les 32 tests couvrent notamment :
 - la recherche sémantique et son seuil ;
 - la construction sécurisée du contexte documentaire ;
 - le diagnostic avec ou sans passage pertinent ;
-- le traitement des erreurs de recherche documentaire.
+- le traitement des erreurs de recherche documentaire ;
+- la configuration des délais Gemini et le traitement explicite du quota `429` ;
+- la connexion Redis simulée ;
+- l’enregistrement, l’expiration, la lecture et la liste des incidents ;
+- le comportement de l’API lorsque Redis est indisponible.
 
-Gemini est simulé pendant les tests. Qdrant utilise une base en mémoire et les opérations PostgreSQL sont isolées ou simulées.
+Gemini et Redis sont simulés pendant les tests de l’API. Qdrant utilise une base en mémoire et les opérations PostgreSQL sont isolées ou simulées.
 
-Les tests ne consomment aucun quota Gemini et n’ajoutent aucune donnée dans la vraie base PostgreSQL ou dans l’index Qdrant persistant.
+Les tests ne consomment aucun quota Gemini et n’ajoutent aucune donnée dans la vraie base PostgreSQL, l’index Qdrant persistant ou le serveur Redis réel.
 
 ## Sécurité
 
@@ -364,6 +445,10 @@ Les tests ne consomment aucun quota Gemini et n’ajoutent aucune donnée dans l
 - les passages documentaires sont traités comme des données non fiables ;
 - les instructions éventuellement présentes dans les logs ou les documents doivent être ignorées ;
 - les erreurs n’affichent ni les secrets ni le contenu complet des prompts ;
+- l’enregistrement d’un incident est désactivé par défaut ;
+- les incidents enregistrés ne contiennent pas les logs bruts ;
+- chaque incident possède une durée de conservation limitée ;
+- une erreur de quota Gemini reçoit une réponse HTTP `429` explicite ;
 - aucune action corrective n’est exécutée automatiquement.
 
 ## Limites actuelles
@@ -375,6 +460,9 @@ Les tests ne consomment aucun quota Gemini et n’ajoutent aucune donnée dans l
 - Le corpus actuel couvre principalement les incidents CPU, mémoire et disque.
 - Les diagnostics reposent sur des mesures ponctuelles sauf si l’historique est consulté séparément.
 - L’application propose des vérifications, mais n’exécute aucune correction automatique.
+- Redis est utilisé comme mémoire temporaire locale et non comme stockage d’archive permanent.
+- Les routes d’incidents ne possèdent pas encore d’authentification et sont destinées à un environnement local de développement.
+- Les quotas et limites de débit Gemini dépendent du projet Google AI utilisé et peuvent bloquer temporairement les appels externes.
 
 ## Roadmap
 
@@ -382,7 +470,7 @@ Les tests ne consomment aucun quota Gemini et n’ajoutent aucune donnée dans l
 - Phase 1 terminée : API FastAPI
 - Phase 2 terminée : surveillance continue et PostgreSQL
 - Phase 3 terminée : RAG documentaire avec Qdrant
-- Phase 4 prévue : mémoire des incidents avec Redis
+- Phase 4 terminée : mémoire temporaire des incidents avec Redis
 - Phase 5 prévue : dashboard
 - Phase 6 prévue : Docker et déploiement
 - Phase 7 prévue : Prometheus et Grafana

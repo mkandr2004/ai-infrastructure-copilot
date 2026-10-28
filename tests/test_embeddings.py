@@ -52,6 +52,8 @@ def test_request_embedding_returns_expected_vector():
         gemini_api_key=SecretStr("cle-fictive"),
         gemini_embedding_model="modele-fictif",
         embedding_dimensions=3,
+        gemini_timeout_ms=30000,
+        gemini_retry_attempts=1,
     )
 
     fake_result = SimpleNamespace(
@@ -79,8 +81,24 @@ def test_request_embedding_returns_expected_vector():
 
     assert vector == [0.1, 0.2, 0.3]
 
-    mock_client_factory.assert_called_once_with(
-        api_key="cle-fictive",
+    mock_client_factory.assert_called_once()
+
+    client_options = (
+        mock_client_factory.call_args.kwargs
+    )
+
+    assert client_options["api_key"] == (
+        "cle-fictive"
+    )
+    assert (
+        client_options["http_options"].timeout
+        == 30000
+    )
+    assert (
+        client_options[
+            "http_options"
+        ].retry_options.attempts
+        == 1
     )
     fake_context.__exit__.assert_called_once()
 
@@ -101,6 +119,8 @@ def test_request_embedding_rejects_wrong_dimension():
         gemini_api_key=SecretStr("cle-fictive"),
         gemini_embedding_model="modele-fictif",
         embedding_dimensions=3,
+        gemini_timeout_ms=30000,
+        gemini_retry_attempts=1,
     )
 
     fake_result = SimpleNamespace(

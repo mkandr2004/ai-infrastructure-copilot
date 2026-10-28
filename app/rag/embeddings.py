@@ -58,7 +58,18 @@ def request_embedding(
         )
 
     with genai.Client(
-        api_key=settings.gemini_api_key.get_secret_value(),
+        api_key=(
+            settings.gemini_api_key
+            .get_secret_value()
+        ),
+        http_options=types.HttpOptions(
+            timeout=settings.gemini_timeout_ms,
+            retry_options=types.HttpRetryOptions(
+                attempts=(
+                    settings.gemini_retry_attempts
+                ),
+            ),
+        ),
     ) as client:
         result = client.models.embed_content(
             model=settings.gemini_embedding_model,
