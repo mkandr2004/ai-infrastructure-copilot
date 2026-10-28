@@ -221,7 +221,7 @@ Compléter ensuite `.env` :
 
     # Gemini
     GEMINI_API_KEY=VOTRE_CLE
-    GEMINI_MODEL=gemini-3.8-flash
+    GEMINI_MODEL=gemini-3.5-flash-lite
     GEMINI_EMBEDDING_MODEL=gemini-embedding-2
     EMBEDDING_DIMENSIONS=768
     GEMINI_TIMEOUT_MS=30000
