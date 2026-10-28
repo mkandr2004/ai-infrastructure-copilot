@@ -10,9 +10,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 class Settings(BaseSettings):
     gemini_api_key: SecretStr | None = None
-    gemini_model: str = "gemini-3.8-flash"
+    gemini_model: str = "gemini-3.5-flash-lite"
     gemini_embedding_model: str = "gemini-embedding-2"
     embedding_dimensions: int = 768
+    gemini_timeout_ms: int = 30000
+    gemini_retry_attempts: int = 1
 
     postgres_host: str = "localhost"
     postgres_port: int = 5432
@@ -24,6 +26,13 @@ class Settings(BaseSettings):
     qdrant_collection: str = "infrastructure_knowledge"
     knowledge_path: Path = PROJECT_ROOT / "knowledge"
     rag_score_threshold: float = 0.72
+
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    redis_db: int = 0
+    redis_password: SecretStr | None = None
+    redis_key_prefix: str = "ai_copilot"
+    incident_ttl_seconds: int = 604800
 
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",

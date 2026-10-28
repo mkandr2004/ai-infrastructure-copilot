@@ -5,10 +5,17 @@ from sqlalchemy.orm import Session
 from app.collectors.system import collect_system_metrics
 from app.core.config import get_settings
 from app.db.database import get_db
+from app.memory.incidents import (
+    get_incident,
+    list_incidents,
+    save_incident,
+)
+from app.memory.redis_client import create_redis_client
 from app.models.metric import MetricSnapshot
 from app.rag.context import build_knowledge_context
 from app.rag.retriever import search_knowledge
 from app.rag.vector_store import create_qdrant_client
+from app.schemas.incident import IncidentRecord
 from app.schemas.metric import MetricSnapshotResponse
 from app.services.diagnosis import (
     build_diagnostic_prompt,
@@ -20,10 +27,19 @@ from app.services.metrics import list_metric_snapshots
 app = FastAPI(title="AI Infrastructure Copilot")
 
 
+def is_gemini_rate_limit_error(
+    error: Exception,
+) -> bool:
+    """Indique si Gemini refuse l'appel pour quota."""
+
+    return getattr(error, "status_code", None) == 429
+
+
 class DiagnoseRequest(BaseModel):
     confirm_external_send: bool = False
     include_logs: bool = False
     use_knowledge: bool = False
+    save_incident: bool = False
     problem_description: str | None = Field(
         default=None,
         max_length=2000,
@@ -37,6 +53,8 @@ class DiagnoseResponse(BaseModel):
     logs_sent: bool
     knowledge_used: bool
     knowledge_sources: list[str]
+    incident_saved: bool
+    incident_id: str | None
 
 
 @app.get("/health")
@@ -60,6 +78,86 @@ def get_metrics_history(
     return list_metric_snapshots(session, limit)
 
 
+@app.get(
+    "/incidents",
+    response_model=list[IncidentRecord],
+)
+def get_incidents(
+    limit: int = Query(default=20, ge=1, le=100),
+) -> list[IncidentRecord]:
+    settings = get_settings()
+    redis_client = None
+
+    try:
+        redis_client = create_redis_client(settings)
+
+        return list_incidents(
+            redis_client,
+            settings,
+            limit=limit,
+        )
+
+    except Exception as error:
+        print(
+            "Erreur Redis pendant la lecture : "
+            f"{type(error).__name__}"
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "La mémoire des incidents est indisponible."
+            ),
+        ) from None
+
+    finally:
+        if redis_client is not None:
+            redis_client.close()
+
+
+@app.get(
+    "/incidents/{incident_id}",
+    response_model=IncidentRecord,
+)
+def get_incident_by_id(
+    incident_id: str,
+) -> IncidentRecord:
+    settings = get_settings()
+    redis_client = None
+
+    try:
+        redis_client = create_redis_client(settings)
+
+        incident = get_incident(
+            redis_client,
+            settings,
+            incident_id,
+        )
+
+    except Exception as error:
+        print(
+            "Erreur Redis pendant la lecture : "
+            f"{type(error).__name__}"
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "La mémoire des incidents est indisponible."
+            ),
+        ) from None
+
+    finally:
+        if redis_client is not None:
+            redis_client.close()
+
+    if incident is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Incident introuvable ou expiré.",
+        )
+
+    return incident
+
+
 @app.post("/diagnose", response_model=DiagnoseResponse)
 def diagnose(request: DiagnoseRequest) -> DiagnoseResponse:
     if not request.confirm_external_send:
@@ -78,6 +176,15 @@ def diagnose(request: DiagnoseRequest) -> DiagnoseResponse:
             detail=(
                 "Une description du problème est nécessaire "
                 "pour rechercher dans la documentation."
+            ),
+        )
+
+    if request.save_incident and not problem_description:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Une description du problème est nécessaire "
+                "pour enregistrer un incident."
             ),
         )
 
@@ -117,6 +224,15 @@ def diagnose(request: DiagnoseRequest) -> DiagnoseResponse:
                 detail=str(error),
             ) from None
         except Exception as error:
+            if is_gemini_rate_limit_error(error):
+                raise HTTPException(
+                    status_code=429,
+                    detail=(
+                        "Quota Gemini dépassé. "
+                        "Réessaie plus tard."
+                    ),
+                ) from None
+
             print(
                 "Erreur de recherche documentaire : "
                 f"{type(error).__name__}"
@@ -126,7 +242,9 @@ def diagnose(request: DiagnoseRequest) -> DiagnoseResponse:
                 detail="La recherche documentaire a échoué.",
             ) from None
 
-        knowledge_context = build_knowledge_context(matches)
+        knowledge_context = build_knowledge_context(
+            matches
+        )
 
         knowledge_sources = list(
             dict.fromkeys(
@@ -142,19 +260,76 @@ def diagnose(request: DiagnoseRequest) -> DiagnoseResponse:
     )
 
     try:
-        diagnosis = request_diagnostic(prompt, settings)
+        diagnosis = request_diagnostic(
+            prompt,
+            settings,
+        )
     except ValueError as error:
         raise HTTPException(
             status_code=503,
             detail=str(error),
         ) from None
     except Exception as error:
+        if is_gemini_rate_limit_error(error):
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "Quota Gemini dépassé. "
+                    "Réessaie plus tard."
+                ),
+            ) from None
+
         # N'affiche ni la clé ni le contenu du prompt.
         print(f"Erreur Gemini : {type(error).__name__}")
         raise HTTPException(
             status_code=502,
-            detail="Le service Gemini n'a pas pu produire de diagnostic.",
+            detail=(
+                "Le service Gemini n'a pas pu "
+                "produire de diagnostic."
+            ),
         ) from None
+
+    incident_saved = False
+    incident_id = None
+
+    if request.save_incident:
+        redis_client = None
+
+        try:
+            redis_client = create_redis_client(
+                settings
+            )
+
+            incident = save_incident(
+                redis_client,
+                settings,
+                system_data=system_data,
+                problem_description=(
+                    problem_description
+                ),
+                diagnostic_model=(
+                    settings.gemini_model
+                ),
+                diagnosis=diagnosis,
+                knowledge_sources=(
+                    knowledge_sources
+                ),
+                logs_included=request.include_logs,
+            )
+
+            incident_saved = True
+            incident_id = incident.id
+
+        except Exception as error:
+            # Le diagnostic reste disponible si Redis échoue.
+            print(
+                "Erreur Redis pendant l'enregistrement : "
+                f"{type(error).__name__}"
+            )
+
+        finally:
+            if redis_client is not None:
+                redis_client.close()
 
     return DiagnoseResponse(
         timestamp=system_data["timestamp"],
@@ -163,4 +338,6 @@ def diagnose(request: DiagnoseRequest) -> DiagnoseResponse:
         logs_sent=request.include_logs,
         knowledge_used=bool(knowledge_context),
         knowledge_sources=knowledge_sources,
+        incident_saved=incident_saved,
+        incident_id=incident_id,
     )
