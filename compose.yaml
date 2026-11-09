@@ -1,0 +1,126 @@
+name: ai-infrastructure-copilot
+
+x-app-environment: &app-environment
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash-lite}
+  GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-gemini-embedding-2}
+  EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
+  GEMINI_TIMEOUT_MS: ${GEMINI_TIMEOUT_MS:-30000}
+  GEMINI_RETRY_ATTEMPTS: ${GEMINI_RETRY_ATTEMPTS:-1}
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: 5432
+  POSTGRES_DB: ${POSTGRES_DB:-ai_infrastructure_copilot}
+  POSTGRES_USER: ${POSTGRES_USER:-ai_copilot_app}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD doit être défini dans .env}
+  QDRANT_PATH: /app/data/qdrant
+  QDRANT_COLLECTION: ${QDRANT_COLLECTION:-infrastructure_knowledge}
+  KNOWLEDGE_PATH: /app/knowledge
+  RAG_SCORE_THRESHOLD: ${RAG_SCORE_THRESHOLD:-0.72}
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  REDIS_DB: ${REDIS_DB:-0}
+  REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+  REDIS_KEY_PREFIX: ${REDIS_KEY_PREFIX:-ai_copilot}
+  INCIDENT_TTL_SECONDS: ${INCIDENT_TTL_SECONDS:-604800}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ai_infrastructure_copilot}
+      POSTGRES_USER: ${POSTGRES_USER:-ai_copilot_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD doit être défini dans .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:8-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    command:
+      - sh
+      - -c
+      - |
+        if [ -n "$${REDIS_PASSWORD:-}" ]; then
+          exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+        fi
+        exec redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          if [ -n "$$REDIS_PASSWORD" ]; then
+            redis-cli --no-auth-warning -a "$$REDIS_PASSWORD" ping;
+          else
+            redis-cli ping;
+          fi
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ai-infrastructure-copilot:local
+    environment:
+      <<: *app-environment
+      INITIALIZE_DATABASE: "true"
+      DATABASE_INIT_MAX_ATTEMPTS: 30
+      DATABASE_INIT_RETRY_SECONDS: 2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${APP_PORT:-8000}:8000"
+    volumes:
+      - qdrant_data:/app/data/qdrant
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    read_only: true
+    init: true
+    stop_grace_period: 20s
+    restart: unless-stopped
+
+  monitoring:
+    image: ai-infrastructure-copilot:local
+    environment:
+      <<: *app-environment
+      INITIALIZE_DATABASE: "false"
+    command:
+      - python
+      - -m
+      - app.monitoring
+      - --interval
+      - ${MONITORING_INTERVAL_SECONDS:-60}
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    read_only: true
+    init: true
+    stop_grace_period: 20s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  qdrant_data:

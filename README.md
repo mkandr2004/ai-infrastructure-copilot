@@ -12,7 +12,8 @@ Son objectif est de surveiller une infrastructure Linux, de collecter ses métri
 - **Phase 3 terminée** : RAG documentaire local avec embeddings Gemini et Qdrant.
 - **Phase 4 terminée** : mémoire temporaire des incidents avec Redis et expiration automatique.
 - **Phase 5 terminée** : dashboard web pour les métriques, l’historique, les incidents et les diagnostics.
-- **Tests automatiques** : 50 tests vérifient l’API, PostgreSQL, la surveillance, le pipeline RAG, la mémoire Redis et le dashboard sans consommer de quota Gemini.
+- **Phase 6 terminée** : conteneurisation Docker et orchestration locale avec Docker Compose.
+- **Tests automatiques** : 56 tests vérifient l’API, les stockages, le RAG, le dashboard et le déploiement sans consommer de quota Gemini.
 
 L’application collecte l’utilisation du CPU, de la mémoire et du disque. Elle peut aussi récupérer les avertissements et erreurs de `journalctl`.
 
@@ -167,6 +168,8 @@ Le dashboard n’ajoute aucun framework frontend ni CDN. Il utilise Jinja2, CSS,
 - redis-py
 - Jinja2
 - HTML, CSS et JavaScript
+- Docker
+- Docker Compose
 - SVG natif
 - pytest et TestClient
 - Git
@@ -308,6 +311,87 @@ Une réindexation synchronise la collection avec les fichiers Markdown actuels. 
 
 Une réindexation complète recalcule actuellement tous les embeddings et peut donc consommer du quota Gemini.
 
+## Déploiement avec Docker Compose
+
+Docker Compose lance quatre services isolés :
+
+| Service | Rôle |
+| --- | --- |
+| `app` | Sert FastAPI, le dashboard et l’API sur le port local configuré. |
+| `monitoring` | Collecte périodiquement les métriques et les écrit dans PostgreSQL. |
+| `postgres` | Conserve l’historique permanent des métriques. |
+| `redis` | Conserve temporairement les incidents diagnostiqués. |
+
+Qdrant reste embarqué dans le conteneur applicatif et écrit son index dans un volume Docker persistant.
+
+### Prérequis Docker
+
+Installer Docker Engine avec le plugin Docker Compose, ou Docker Desktop avec l’intégration WSL activée.
+
+Vérifier ensuite les commandes :
+
+    docker --version
+    docker compose version
+
+### Configuration Docker
+
+Créer la configuration locale si elle n’existe pas encore :
+
+    cp .env.example .env
+    chmod 600 .env
+
+`POSTGRES_PASSWORD` doit obligatoirement contenir un vrai mot de passe. `GEMINI_API_KEY` reste optionnelle tant qu’aucun diagnostic ou embedding externe n’est demandé.
+
+Les variables `POSTGRES_HOST` et `REDIS_HOST` peuvent rester à `localhost` pour l’exécution native. Compose les remplace automatiquement par les noms internes `postgres` et `redis` dans les conteneurs.
+
+Les paramètres spécifiques au déploiement sont :
+
+| Variable | Valeur par défaut | Rôle |
+| --- | --- | --- |
+| `APP_PORT` | `8000` | Port local du dashboard et de l’API. |
+| `MONITORING_INTERVAL_SECONDS` | `60` | Intervalle entre deux mesures enregistrées. |
+
+### Démarrage
+
+Construire l’image et démarrer les quatre services :
+
+    docker compose up --build --detach
+
+Vérifier leur état et la santé de l’API :
+
+    docker compose ps
+    curl http://127.0.0.1:8000/health
+
+Le dashboard est disponible sur <http://127.0.0.1:8000/dashboard>.
+
+Au premier démarrage, l’entrypoint attend PostgreSQL puis crée les tables absentes. Les conteneurs applicatifs sont exécutés avec un utilisateur non privilégié. PostgreSQL, Redis et Qdrant utilisent des volumes nommés persistants.
+
+### Indexation RAG dans Docker
+
+Après le démarrage, indexer la documentation avec une commande ponctuelle :
+
+    docker compose run --rm app \
+      python -m app.rag.index_knowledge \
+      --confirm-external-send
+
+Cette opération utilise la clé Gemini configurée et peut consommer du quota d’embeddings.
+
+### Exploitation et arrêt
+
+Suivre les journaux applicatifs :
+
+    docker compose logs --follow app monitoring
+
+Arrêter les conteneurs sans supprimer les données :
+
+    docker compose down
+
+Les volumes PostgreSQL, Redis et Qdrant sont conservés. La commande suivante les supprime définitivement et ne doit être utilisée que pour une remise à zéro volontaire :
+
+    docker compose down --volumes
+
+Le port applicatif est lié à `127.0.0.1` uniquement. Le déploiement n’est donc pas exposé directement sur le réseau. Un déploiement distant nécessitera un reverse proxy HTTPS, une authentification et une politique de sauvegarde.
+
 ## Utilisation
 
 ### Diagnostic depuis le terminal
@@ -437,9 +521,10 @@ Lancer les tests :
 
     python -m pytest -q
 
-Les 50 tests couvrent notamment :
+Les 56 tests couvrent notamment :
 
 - les routes principales de l’API ;
+- la structure, la sécurité et les dépendances du déploiement Docker Compose ;
 - le rendu du dashboard et la disponibilité de ses ressources statiques ;
 - la confirmation obligatoire avant un appel externe ;
 - l’exclusion des logs par défaut ;
@@ -481,9 +566,12 @@ Le rendu HTML et la disponibilité des fichiers CSS et JavaScript du dashboard s
 - les incidents enregistrés ne contiennent pas les logs bruts ;
 - chaque incident possède une durée de conservation limitée ;
 - une erreur de quota Gemini reçoit une réponse HTTP `429` explicite ;
-- aucune action corrective n’est exécutée automatiquement.
+- aucune action corrective n’est exécutée automatiquement ;
 
 - le dashboard exige une confirmation explicite avant l’appel à Gemini ;
+- l’image Docker exclut `.env`, `.git`, les données locales et l’environnement virtuel ;
+- les conteneurs applicatifs utilisent un utilisateur non privilégié et un système de fichiers racine en lecture seule ;
+- PostgreSQL et Redis ne publient aucun port sur la machine hôte ;
 - les contenus externes sont affichés comme du texte et non interprétés comme du HTML.
 
 ## Limites actuelles
@@ -501,6 +589,8 @@ Le rendu HTML et la disponibilité des fichiers CSS et JavaScript du dashboard s
 
 - Le dashboard ne possède pas encore d’authentification et doit rester accessible uniquement depuis l’hôte local.
 - Les graphiques SVG n’offrent pas encore de zoom ou d’infobulles interactives.
+- Dans Docker, les métriques décrivent le conteneur applicatif et non l’ensemble de la machine hôte.
+- `journalctl` n’est généralement pas disponible dans le conteneur applicatif.
 
 ## Roadmap
 
@@ -510,6 +600,6 @@ Le rendu HTML et la disponibilité des fichiers CSS et JavaScript du dashboard s
 - Phase 3 terminée : RAG documentaire avec Qdrant
 - Phase 4 terminée : mémoire temporaire des incidents avec Redis
 - Phase 5 terminée : dashboard web opérationnel
-- Phase 6 prévue : Docker et déploiement
+- Phase 6 terminée : Docker et déploiement local avec Compose
 - Phase 7 prévue : Prometheus et Grafana
 - Phase 8 prévue : workflows et agents optionnels
