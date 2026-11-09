@@ -11,7 +11,8 @@ Son objectif est de surveiller une infrastructure Linux, de collecter ses métri
 - **Phase 2 terminée** : stockage PostgreSQL, historique HTTP et surveillance périodique.
 - **Phase 3 terminée** : RAG documentaire local avec embeddings Gemini et Qdrant.
 - **Phase 4 terminée** : mémoire temporaire des incidents avec Redis et expiration automatique.
-- **Tests automatiques** : 48 tests vérifient l’API, PostgreSQL, la surveillance, le pipeline RAG et la mémoire Redis sans consommer de quota Gemini.
+- **Phase 5 terminée** : dashboard web pour les métriques, l’historique, les incidents et les diagnostics.
+- **Tests automatiques** : 50 tests vérifient l’API, PostgreSQL, la surveillance, le pipeline RAG, la mémoire Redis et le dashboard sans consommer de quota Gemini.
 
 L’application collecte l’utilisation du CPU, de la mémoire et du disque. Elle peut aussi récupérer les avertissements et erreurs de `journalctl`.
 
@@ -22,6 +23,8 @@ Le diagnostic peut rechercher des passages pertinents dans une documentation loc
 À la demande de l’utilisateur, le résultat d’un diagnostic peut être enregistré dans Redis avec un résumé des métriques et les sources documentaires utilisées. Les logs bruts ne sont jamais enregistrés dans l’incident.
 
 Les appels à Gemini nécessitent toujours une confirmation explicite. L’envoi des logs est désactivé par défaut.
+
+Le dashboard web rassemble les métriques actuelles, l’historique PostgreSQL, les incidents Redis et le formulaire de diagnostic Gemini dans une interface responsive servie directement par FastAPI.
 
 ## Architecture actuelle
 
@@ -65,6 +68,7 @@ Les appels à Gemini nécessitent toujours une confirmation explicite. L’envoi
             │    API FastAPI
             │       │
             │       ├──► GET /health
+            │       ├──► GET /dashboard
             │       ├──► GET /metrics
             │       ├──► GET /metrics/history
             │       ├──► GET /incidents
@@ -135,6 +139,19 @@ L’enregistrement est optionnel et doit être demandé avec `save_incident: tru
 
 Redis est une mémoire temporaire et non l’historique permanent des métriques. PostgreSQL reste responsable des mesures collectées dans le temps.
 
+## Dashboard web
+
+| Fichier | Rôle |
+| --- | --- |
+| `app/dashboard/router.py` | Sert la page HTML sur `GET /dashboard`. |
+| `app/dashboard/templates/dashboard.html` | Structure accessible de l’interface. |
+| `app/dashboard/static/dashboard.css` | Mise en page sombre et responsive. |
+| `app/dashboard/static/dashboard.js` | Charge les métriques actuelles et l’historique. |
+| `app/dashboard/static/dashboard-chart.js` | Dessine les tendances avec un SVG natif. |
+| `app/dashboard/static/dashboard-operations.js` | Gère Redis et le formulaire de diagnostic. |
+
+Le dashboard n’ajoute aucun framework frontend ni CDN. Il utilise Jinja2, CSS, JavaScript et SVG natifs. Les contenus provenant des incidents et des diagnostics sont insérés avec `textContent` afin de ne pas interpréter leur contenu comme du HTML.
+
 ## Technologies utilisées
 
 - Python
@@ -148,6 +165,9 @@ Redis est une mémoire temporaire et non l’historique permanent des métriques
 - Gemini Embeddings
 - Redis
 - redis-py
+- Jinja2
+- HTML, CSS et JavaScript
+- SVG natif
 - pytest et TestClient
 - Git
 
@@ -334,6 +354,7 @@ La documentation interactive est disponible sur <http://127.0.0.1:8000/docs>.
 | Route | Rôle |
 | --- | --- |
 | `GET /health` | Vérifier que l’API répond. |
+| `GET /dashboard` | Ouvrir le tableau de bord web. |
 | `GET /metrics` | Consulter une mesure actuelle sans l’enregistrer. |
 | `GET /metrics/history` | Lire les instantanés enregistrés dans PostgreSQL. |
 | `POST /diagnose` | Demander un diagnostic Gemini, avec RAG optionnel. |
@@ -345,6 +366,14 @@ Consulter les dix mesures les plus récentes :
     curl "http://127.0.0.1:8000/metrics/history?limit=10"
 
 La valeur de `limit` doit être comprise entre `1` et `1000`. Les résultats sont classés du plus récent au plus ancien.
+
+### Dashboard
+
+Après le démarrage d’Uvicorn, ouvrir :
+
+    http://127.0.0.1:8000/dashboard
+
+Le dashboard permet de consulter les métriques actuelles, visualiser l’historique PostgreSQL, lire les incidents Redis et demander un diagnostic Gemini. L’envoi des logs et l’enregistrement Redis restent des choix explicites.
 
 ### Diagnostic sans recherche documentaire
 
@@ -408,9 +437,10 @@ Lancer les tests :
 
     python -m pytest -q
 
-Les 48 tests couvrent notamment :
+Les 50 tests couvrent notamment :
 
 - les routes principales de l’API ;
+- le rendu du dashboard et la disponibilité de ses ressources statiques ;
 - la confirmation obligatoire avant un appel externe ;
 - l’exclusion des logs par défaut ;
 - l’historique PostgreSQL ;
@@ -433,6 +463,8 @@ Gemini et Redis sont simulés pendant les tests de l’API. Qdrant utilise une b
 
 Les tests ne consomment aucun quota Gemini et n’ajoutent aucune donnée dans la vraie base PostgreSQL, l’index Qdrant persistant ou le serveur Redis réel.
 
+Le rendu HTML et la disponibilité des fichiers CSS et JavaScript du dashboard sont également couverts par les tests.
+
 ## Sécurité
 
 - les clés et mots de passe sont conservés dans `.env` ;
@@ -451,6 +483,9 @@ Les tests ne consomment aucun quota Gemini et n’ajoutent aucune donnée dans l
 - une erreur de quota Gemini reçoit une réponse HTTP `429` explicite ;
 - aucune action corrective n’est exécutée automatiquement.
 
+- le dashboard exige une confirmation explicite avant l’appel à Gemini ;
+- les contenus externes sont affichés comme du texte et non interprétés comme du HTML.
+
 ## Limites actuelles
 
 - Qdrant fonctionne en mode local persistant, adapté au développement et à une utilisation mono-processus.
@@ -464,6 +499,9 @@ Les tests ne consomment aucun quota Gemini et n’ajoutent aucune donnée dans l
 - Les routes d’incidents ne possèdent pas encore d’authentification et sont destinées à un environnement local de développement.
 - Les quotas et limites de débit Gemini dépendent du projet Google AI utilisé et peuvent bloquer temporairement les appels externes.
 
+- Le dashboard ne possède pas encore d’authentification et doit rester accessible uniquement depuis l’hôte local.
+- Les graphiques SVG n’offrent pas encore de zoom ou d’infobulles interactives.
+
 ## Roadmap
 
 - Phase 0 terminée : script de diagnostic terminal
@@ -471,7 +509,7 @@ Les tests ne consomment aucun quota Gemini et n’ajoutent aucune donnée dans l
 - Phase 2 terminée : surveillance continue et PostgreSQL
 - Phase 3 terminée : RAG documentaire avec Qdrant
 - Phase 4 terminée : mémoire temporaire des incidents avec Redis
-- Phase 5 prévue : dashboard
+- Phase 5 terminée : dashboard web opérationnel
 - Phase 6 prévue : Docker et déploiement
 - Phase 7 prévue : Prometheus et Grafana
 - Phase 8 prévue : workflows et agents optionnels

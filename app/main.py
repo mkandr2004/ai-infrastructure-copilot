@@ -1,9 +1,16 @@
 from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.collectors.system import collect_system_metrics
-from app.core.config import get_settings
+from app.core.config import (
+    PROJECT_ROOT,
+    get_settings,
+)
+from app.dashboard.router import (
+    router as dashboard_router,
+)
 from app.db.database import get_db
 from app.memory.incidents import (
     get_incident,
@@ -24,7 +31,25 @@ from app.services.diagnosis import (
 from app.services.metrics import list_metric_snapshots
 
 
+DASHBOARD_STATIC_DIRECTORY = (
+    PROJECT_ROOT
+    / "app"
+    / "dashboard"
+    / "static"
+)
+
+
 app = FastAPI(title="AI Infrastructure Copilot")
+
+app.mount(
+    "/dashboard/static",
+    StaticFiles(
+        directory=DASHBOARD_STATIC_DIRECTORY,
+    ),
+    name="dashboard_static",
+)
+
+app.include_router(dashboard_router)
 
 
 def is_gemini_rate_limit_error(
