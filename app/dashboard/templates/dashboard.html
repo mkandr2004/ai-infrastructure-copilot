@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>{{ page_title }}</title>
+
+    <link
+        rel="stylesheet"
+        href="{{
+            url_for(
+                'dashboard_static',
+                path='/dashboard.css'
+            )
+        }}"
+    >
+
+    <script
+        src="{{
+            url_for(
+                'dashboard_static',
+                path='/dashboard.js'
+            )
+        }}"
+        defer
+    ></script>
+
+    <script
+        src="{{
+            url_for(
+                'dashboard_static',
+                path='/dashboard-chart.js'
+            )
+        }}"
+        defer
+    ></script>
+
+    <script
+        src="{{
+            url_for(
+                'dashboard_static',
+                path='/dashboard-operations.js'
+            )
+        }}"
+        defer
+    ></script>
+</head>
+
+<body>
+    <div class="dashboard-shell">
+        <header class="topbar">
+            <div>
+                <p class="eyebrow">
+                    Observabilité Linux
+                </p>
+
+                <h1>AI Infrastructure Copilot</h1>
+
+                <p class="subtitle">
+                    Supervision des ressources et des incidents
+                    de l’infrastructure.
+                </p>
+            </div>
+
+            <div class="topbar-actions">
+                <span
+                    id="api-status"
+                    class="status-badge status-loading"
+                >
+                    Connexion…
+                </span>
+
+                <button
+                    id="refresh-button"
+                    class="refresh-button"
+                    type="button"
+                >
+                    Actualiser
+                </button>
+            </div>
+        </header>
+
+        <main>
+            <section
+                class="section"
+                aria-labelledby="current-metrics-title"
+            >
+                <div class="section-heading">
+                    <div>
+                        <p class="section-label">
+                            État actuel
+                        </p>
+
+                        <h2 id="current-metrics-title">
+                            Métriques système
+                        </h2>
+                    </div>
+
+                    <p class="collection-time">
+                        Dernière collecte :
+                        <time id="collection-time">
+                            en attente
+                        </time>
+                    </p>
+                </div>
+
+                <div class="metrics-grid">
+                    <article class="metric-card">
+                        <div class="metric-card-heading">
+                            <span class="metric-icon">
+                                CPU
+                            </span>
+
+                            <span class="metric-label">
+                                Processeur
+                            </span>
+                        </div>
+
+                        <p
+                            id="cpu-value"
+                            class="metric-value"
+                        >
+                            -- %
+                        </p>
+
+                        <div
+                            class="metric-bar"
+                            aria-hidden="true"
+                        >
+                            <div
+                                id="cpu-bar"
+                                class="metric-bar-fill"
+                                data-level="normal"
+                            ></div>
+                        </div>
+                    </article>
+
+                    <article class="metric-card">
+                        <div class="metric-card-heading">
+                            <span class="metric-icon">
+                                RAM
+                            </span>
+
+                            <span class="metric-label">
+                                Mémoire
+                            </span>
+                        </div>
+
+                        <p
+                            id="memory-value"
+                            class="metric-value"
+                        >
+                            -- %
+                        </p>
+
+                        <div
+                            class="metric-bar"
+                            aria-hidden="true"
+                        >
+                            <div
+                                id="memory-bar"
+                                class="metric-bar-fill"
+                                data-level="normal"
+                            ></div>
+                        </div>
+                    </article>
+
+                    <article class="metric-card">
+                        <div class="metric-card-heading">
+                            <span class="metric-icon">
+                                SSD
+                            </span>
+
+                            <span class="metric-label">
+                                Disque
+                            </span>
+                        </div>
+
+                        <p
+                            id="disk-value"
+                            class="metric-value"
+                        >
+                            -- %
+                        </p>
+
+                        <div
+                            class="metric-bar"
+                            aria-hidden="true"
+                        >
+                            <div
+                                id="disk-bar"
+                                class="metric-bar-fill"
+                                data-level="normal"
+                            ></div>
+                        </div>
+                    </article>
+                </div>
+            </section>
+
+            <section
+                class="section history-section"
+                aria-labelledby="history-title"
+            >
+                <div class="section-heading">
+                    <div>
+                        <p class="section-label">
+                            PostgreSQL
+                        </p>
+
+                        <h2 id="history-title">
+                            Historique des métriques
+                        </h2>
+                    </div>
+
+                    <label class="history-limit-label">
+                        Nombre de mesures
+
+                        <select id="history-limit">
+                            <option value="10">10</option>
+                            <option value="25" selected>25</option>
+                            <option value="50">50</option>
+                            <option value="100">100</option>
+                        </select>
+                    </label>
+                </div>
+
+                <p
+                    id="history-status"
+                    class="history-status"
+                >
+                    Chargement de l’historique…
+                </p>
+
+                <div class="chart-card">
+                    <div class="chart-legend">
+                        <span class="legend-item">
+                            <span class="legend-dot legend-cpu"></span>
+                            CPU
+                        </span>
+                        <span class="legend-item">
+                            <span class="legend-dot legend-memory"></span>
+                            Mémoire
+                        </span>
+                        <span class="legend-item">
+                            <span class="legend-dot legend-disk"></span>
+                            Disque
+                        </span>
+                    </div>
+
+                    <svg
+                        id="history-chart"
+                        class="history-chart"
+                        viewBox="0 0 1000 300"
+                        preserveAspectRatio="none"
+                        role="img"
+                        aria-labelledby="history-chart-title history-chart-description"
+                    >
+                        <title id="history-chart-title">
+                            Évolution des métriques système
+                        </title>
+                        <desc id="history-chart-description">
+                            Courbes CPU, mémoire et disque exprimées en pourcentage.
+                        </desc>
+
+                        <g class="chart-grid" aria-hidden="true">
+                            <line x1="40" y1="20" x2="960" y2="20"></line>
+                            <line x1="40" y1="85" x2="960" y2="85"></line>
+                            <line x1="40" y1="150" x2="960" y2="150"></line>
+                            <line x1="40" y1="215" x2="960" y2="215"></line>
+                            <line x1="40" y1="280" x2="960" y2="280"></line>
+                        </g>
+
+                        <polyline id="cpu-history-line" class="chart-line chart-line-cpu"></polyline>
+                        <polyline id="memory-history-line" class="chart-line chart-line-memory"></polyline>
+                        <polyline id="disk-history-line" class="chart-line chart-line-disk"></polyline>
+                    </svg>
+
+                    <p id="history-chart-empty" class="chart-empty" hidden>
+                        Pas assez de données pour dessiner une tendance.
+                    </p>
+                </div>
+
+                <div class="history-table-wrapper">
+                    <table class="history-table">
+                        <thead>
+                            <tr>
+                                <th>Date de collecte</th>
+                                <th>CPU</th>
+                                <th>Mémoire</th>
+                                <th>Disque</th>
+                            </tr>
+                        </thead>
+
+                        <tbody id="history-body">
+                            <tr>
+                                <td colspan="4">
+                                    Chargement…
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section
+                class="section operational-section"
+                aria-labelledby="incidents-title"
+            >
+                <div class="section-heading">
+                    <div>
+                        <p class="section-label">Redis</p>
+                        <h2 id="incidents-title">Incidents récents</h2>
+                    </div>
+
+                    <button
+                        id="refresh-incidents-button"
+                        class="secondary-button"
+                        type="button"
+                    >
+                        Actualiser les incidents
+                    </button>
+                </div>
+
+                <p id="incidents-status" class="panel-status">
+                    Chargement des incidents…
+                </p>
+
+                <div class="incidents-layout">
+                    <div id="incidents-list" class="incidents-list"></div>
+
+                    <article class="incident-detail">
+                        <p id="incident-detail-placeholder" class="empty-state">
+                            Sélectionne un incident pour afficher son diagnostic.
+                        </p>
+
+                        <div id="incident-detail-content" hidden>
+                            <p class="section-label">Incident sélectionné</p>
+                            <h3 id="incident-detail-title"></h3>
+                            <p id="incident-detail-created" class="detail-meta"></p>
+
+                            <div class="incident-metrics">
+                                <span>CPU <strong id="incident-cpu"></strong></span>
+                                <span>RAM <strong id="incident-memory"></strong></span>
+                                <span>Disque <strong id="incident-disk"></strong></span>
+                            </div>
+
+                            <dl class="detail-list">
+                                <div>
+                                    <dt>Modèle</dt>
+                                    <dd id="incident-model"></dd>
+                                </div>
+                                <div>
+                                    <dt>Sources</dt>
+                                    <dd id="incident-sources"></dd>
+                                </div>
+                                <div>
+                                    <dt>Logs inclus</dt>
+                                    <dd id="incident-logs"></dd>
+                                </div>
+                            </dl>
+
+                            <h4>Diagnostic</h4>
+                            <pre id="incident-diagnosis" class="diagnosis-text"></pre>
+                        </div>
+                    </article>
+                </div>
+            </section>
+
+            <section
+                class="section diagnosis-section"
+                aria-labelledby="diagnosis-title"
+            >
+                <div class="section-heading">
+                    <div>
+                        <p class="section-label">Gemini</p>
+                        <h2 id="diagnosis-title">Nouveau diagnostic</h2>
+                    </div>
+                </div>
+
+                <form id="diagnosis-form" class="diagnosis-form">
+                    <label class="form-field" for="problem-description">
+                        <span>Description du problème</span>
+                        <textarea
+                            id="problem-description"
+                            maxlength="2000"
+                            rows="5"
+                            required
+                            placeholder="Décris le symptôme observé, sa durée et son impact."
+                        ></textarea>
+                    </label>
+
+                    <fieldset class="diagnosis-options">
+                        <legend>Options</legend>
+
+                        <label class="check-option">
+                            <input id="use-knowledge" type="checkbox" checked>
+                            Utiliser la documentation RAG
+                        </label>
+
+                        <label class="check-option">
+                            <input id="save-incident" type="checkbox" checked>
+                            Enregistrer l’incident dans Redis
+                        </label>
+
+                        <label class="check-option check-option-warning">
+                            <input id="include-logs" type="checkbox">
+                            Autoriser l’envoi des logs à Gemini
+                        </label>
+
+                        <label class="check-option check-option-confirm">
+                            <input id="confirm-external-send" type="checkbox" required>
+                            Je confirme explicitement l’envoi à Gemini
+                        </label>
+                    </fieldset>
+
+                    <button id="diagnose-button" class="primary-button" type="submit">
+                        Lancer le diagnostic
+                    </button>
+                </form>
+
+                <p id="diagnosis-status" class="panel-status"></p>
+
+                <article id="diagnosis-result" class="diagnosis-result" hidden>
+                    <div class="result-heading">
+                        <div>
+                            <p class="section-label">Résultat</p>
+                            <h3>Diagnostic Gemini</h3>
+                        </div>
+                        <span id="diagnosis-model" class="model-badge"></span>
+                    </div>
+
+                    <p><strong>Sources :</strong> <span id="diagnosis-sources"></span></p>
+                    <p><strong>Incident Redis :</strong> <span id="diagnosis-incident"></span></p>
+                    <pre id="diagnosis-output" class="diagnosis-text"></pre>
+                </article>
+            </section>
+        </main>
+    </div>
+</body>
+</html>
