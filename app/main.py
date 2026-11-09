@@ -11,6 +11,12 @@ from app.core.config import (
 from app.dashboard.router import (
     router as dashboard_router,
 )
+from app.observability.router import (
+    router as observability_router,
+)
+from app.observability.middleware import (
+    PrometheusMiddleware,
+)
 from app.db.database import get_db
 from app.memory.incidents import (
     get_incident,
@@ -40,6 +46,9 @@ DASHBOARD_STATIC_DIRECTORY = (
 
 
 app = FastAPI(title="AI Infrastructure Copilot")
+app.add_middleware(
+    PrometheusMiddleware,
+)
 
 app.mount(
     "/dashboard/static",
@@ -50,6 +59,7 @@ app.mount(
 )
 
 app.include_router(dashboard_router)
+app.include_router(observability_router)
 
 
 def is_gemini_rate_limit_error(

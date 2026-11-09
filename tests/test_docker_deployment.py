@@ -21,13 +21,17 @@ def test_compose_defines_required_services_and_volumes():
 
     assert set(services) == {
         "app",
+        "grafana",
         "monitoring",
         "postgres",
+        "prometheus",
         "redis",
     }
 
     assert set(compose["volumes"]) == {
+        "grafana_data",
         "postgres_data",
+        "prometheus_data",
         "qdrant_data",
         "redis_data",
     }
@@ -38,6 +42,12 @@ def test_compose_defines_required_services_and_volumes():
     assert services["redis"]["image"] == (
         "redis:8-alpine"
     )
+    assert services["prometheus"]["image"] == (
+        "prom/prometheus:v3.15.1"
+    )
+    assert services["grafana"]["image"] == (
+        "grafana/grafana:13.3.0"
+    )
 
 
 def test_compose_keeps_data_services_internal():
@@ -47,6 +57,12 @@ def test_compose_keeps_data_services_internal():
     assert "ports" not in services["redis"]
     assert services["app"]["ports"] == [
         "127.0.0.1:${APP_PORT:-8000}:8000"
+    ]
+    assert services["prometheus"]["ports"] == [
+        "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    ]
+    assert services["grafana"]["ports"] == [
+        "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
     ]
 
     app_environment = services["app"]["environment"]
@@ -71,9 +87,23 @@ def test_compose_waits_for_healthy_dependencies():
     assert services["monitoring"]["depends_on"]["app"][
         "condition"
     ] == "service_healthy"
+    assert services["prometheus"]["depends_on"]["app"][
+        "condition"
+    ] == "service_healthy"
+    assert services["grafana"]["depends_on"][
+        "prometheus"
+    ]["condition"] == "service_healthy"
 
     assert "healthcheck" in services["postgres"]
     assert "healthcheck" in services["redis"]
+    assert "healthcheck" in services["prometheus"]
+    assert "healthcheck" in services["grafana"]
+    assert services["grafana"]["healthcheck"]["test"] == [
+        "CMD-SHELL",
+        (
+            "wget -q --spider http://127.0.0.1:3000/api/health"
+        ),
+    ]
     assert services["monitoring"]["healthcheck"] == {
         "disable": True,
     }
@@ -93,6 +123,12 @@ def test_runtime_container_is_hardened():
 
     assert compose["services"]["app"]["read_only"] is True
     assert compose["services"]["monitoring"][
+        "read_only"
+    ] is True
+    assert compose["services"]["prometheus"][
+        "read_only"
+    ] is True
+    assert compose["services"]["grafana"][
         "read_only"
     ] is True
 
