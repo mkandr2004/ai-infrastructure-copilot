@@ -17,6 +17,7 @@ class WorkflowStatus(StrEnum):
     """États possibles d'un workflow complet."""
 
     PENDING = "pending"
+    QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"

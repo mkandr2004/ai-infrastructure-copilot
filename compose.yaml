@@ -23,6 +23,12 @@ x-app-environment: &app-environment
   REDIS_KEY_PREFIX: ${REDIS_KEY_PREFIX:-ai_copilot}
   INCIDENT_TTL_SECONDS: ${INCIDENT_TTL_SECONDS:-604800}
   WORKFLOW_TTL_SECONDS: ${WORKFLOW_TTL_SECONDS:-86400}
+  WORKFLOW_QUEUE_NAME: ${WORKFLOW_QUEUE_NAME:-investigation-workflows}
+  WORKFLOW_WORKER_POLL_SECONDS: ${WORKFLOW_WORKER_POLL_SECONDS:-2}
+  ALERT_TTL_SECONDS: ${ALERT_TTL_SECONDS:-604800}
+  ALERT_WEBHOOK_TOKEN: ${ALERT_WEBHOOK_TOKEN:?ALERT_WEBHOOK_TOKEN doit être défini dans .env}
+  NOTIFICATION_WEBHOOK_URL: ${NOTIFICATION_WEBHOOK_URL:-}
+  NOTIFICATION_TIMEOUT_SECONDS: ${NOTIFICATION_TIMEOUT_SECONDS:-5}
 
 services:
   postgres:
@@ -121,6 +127,29 @@ services:
     stop_grace_period: 20s
     restart: unless-stopped
 
+  workflow-worker:
+    image: ai-infrastructure-copilot:local
+    environment:
+      <<: *app-environment
+      INITIALIZE_DATABASE: "false"
+    command:
+      - python
+      - -m
+      - app.workflows.worker
+    depends_on:
+      app:
+        condition: service_healthy
+    volumes:
+      - qdrant_data:/app/data/qdrant
+    healthcheck:
+      disable: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    read_only: true
+    init: true
+    stop_grace_period: 20s
+    restart: unless-stopped
+
   prometheus:
     image: prom/prometheus:v3.15.1
     command:
@@ -130,10 +159,13 @@ services:
     depends_on:
       app:
         condition: service_healthy
+      alertmanager:
+        condition: service_healthy
     ports:
       - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
     volumes:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/rules:/etc/prometheus/rules:ro
       - prometheus_data:/prometheus
     healthcheck:
       test:
@@ -149,6 +181,37 @@ services:
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=32m
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    environment:
+      ALERT_WEBHOOK_TOKEN: ${ALERT_WEBHOOK_TOKEN:?ALERT_WEBHOOK_TOKEN doit être défini dans .env}
+    entrypoint:
+      - /bin/sh
+      - /etc/alertmanager/render-config.sh
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${ALERTMANAGER_PORT:-9093}:9093"
+    volumes:
+      - ./deploy/alertmanager/alertmanager.yml.template:/etc/alertmanager/alertmanager.yml.template:ro
+      - ./docker/render-alertmanager-config.sh:/etc/alertmanager/render-config.sh:ro
+      - alertmanager_data:/alertmanager
+    healthcheck:
+      test:
+        - CMD
+        - amtool
+        - check-config
+        - /tmp/alertmanager.yml
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
     restart: unless-stopped
 
   grafana:
@@ -186,3 +249,4 @@ volumes:
   qdrant_data:
   prometheus_data:
   grafana_data:
+  alertmanager_data:

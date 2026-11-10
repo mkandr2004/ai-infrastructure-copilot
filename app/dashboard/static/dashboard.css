@@ -781,6 +781,54 @@ h2 {
     background: #392e17;
 }
 
+.workflow-status-badge[data-status="queued"] {
+    color: var(--warning);
+    background: #392e17;
+}
+
+.alerts-list {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.alert-card {
+    padding: 16px;
+    background: var(--surface-light);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--warning);
+    border-radius: 14px;
+}
+
+.alert-card[data-severity="critical"] {
+    border-left-color: #ff6b75;
+}
+
+.alert-card-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.alert-card-heading h3 {
+    margin: 0;
+}
+
+.alert-status-badge {
+    padding: 5px 8px;
+    color: #ffadb2;
+    background: #481d25;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 800;
+}
+
+.alert-status-badge[data-status="resolved"] {
+    color: var(--accent);
+    background: var(--accent-dark);
+}
+
 .workflow-steps {
     display: grid;
     gap: 8px;
@@ -822,6 +870,10 @@ h2 {
     .diagnosis-options,
     .workflow-layout,
     .workflow-findings {
+        grid-template-columns: 1fr;
+    }
+
+    .alerts-list {
         grid-template-columns: 1fr;
     }
 

@@ -60,14 +60,36 @@ def get_workflow_step(
     )
 
 
-def start_workflow(
+def queue_workflow(
     workflow: InvestigationWorkflowRecord,
 ) -> InvestigationWorkflowRecord:
-    """Démarre un workflow en attente."""
+    """Place un workflow en attente dans la file Redis."""
 
     if workflow.status != WorkflowStatus.PENDING:
         raise ValueError(
-            "Seul un workflow en attente peut démarrer."
+            "Seul un workflow en attente peut être mis en file."
+        )
+
+    return workflow.model_copy(
+        update={
+            "status": WorkflowStatus.QUEUED,
+            "updated_at": datetime.now(UTC),
+            "error": None,
+        },
+    )
+
+
+def start_workflow(
+    workflow: InvestigationWorkflowRecord,
+) -> InvestigationWorkflowRecord:
+    """Démarre un workflow en attente ou en file."""
+
+    if workflow.status not in {
+        WorkflowStatus.PENDING,
+        WorkflowStatus.QUEUED,
+    }:
+        raise ValueError(
+            "Seul un workflow en attente ou en file peut démarrer."
         )
 
     return workflow.model_copy(

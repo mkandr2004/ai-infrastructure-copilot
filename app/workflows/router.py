@@ -1,16 +1,14 @@
 """Routes HTTP des workflows d'investigation."""
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, HTTPException, Query
 
 from app.core.config import get_settings
-from app.db.database import get_db
 from app.memory.redis_client import create_redis_client
 from app.schemas.workflow import (
     InvestigationWorkflowRecord,
     InvestigationWorkflowRequest,
 )
-from app.workflows.runner import run_investigation_workflow
+from app.workflows.queue import enqueue_workflow
 from app.workflows.storage import (
     create_workflow,
     get_workflow,
@@ -24,21 +22,15 @@ router = APIRouter(
 )
 
 
-def is_rate_limit_error(error: Exception) -> bool:
-    """Indique si Gemini refuse l'appel pour quota."""
-
-    return getattr(error, "status_code", None) == 429
-
-
 @router.post(
     "",
     response_model=InvestigationWorkflowRecord,
+    status_code=202,
 )
 def create_investigation_workflow(
     request: InvestigationWorkflowRequest,
-    session: Session = Depends(get_db),
 ) -> InvestigationWorkflowRecord:
-    """Crée et exécute une investigation contrôlée."""
+    """Crée et place une investigation dans la file Redis."""
 
     if not request.confirm_external_send:
         raise HTTPException(
@@ -59,9 +51,8 @@ def create_investigation_workflow(
             request,
         )
 
-        return run_investigation_workflow(
+        return enqueue_workflow(
             redis_client,
-            session,
             settings,
             workflow,
         )
@@ -72,23 +63,14 @@ def create_investigation_workflow(
             detail=str(error),
         ) from None
     except Exception as error:
-        if is_rate_limit_error(error):
-            raise HTTPException(
-                status_code=429,
-                detail=(
-                    "Quota Gemini dépassé. "
-                    "Réessaie plus tard."
-                ),
-            ) from None
-
         print(
-            "Erreur du workflow : "
+            "Erreur de mise en file du workflow : "
             f"{type(error).__name__}"
         )
         raise HTTPException(
-            status_code=502,
+            status_code=503,
             detail=(
-                "Le workflow d'investigation a échoué."
+                "La file des workflows est indisponible."
             ),
         ) from None
     finally:

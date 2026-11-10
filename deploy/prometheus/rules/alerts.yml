@@ -1,0 +1,47 @@
+groups:
+  - name: ai-infrastructure-copilot
+    rules:
+      - alert: AICopilotAPIDown
+        expr: up{job="ai-infrastructure-copilot"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: API AI Infrastructure Copilot indisponible
+          description: Prometheus ne parvient plus à collecter l’API depuis une minute.
+
+      - alert: AICopilotCPUHigh
+        expr: ai_copilot_system_cpu_usage_percent >= 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Utilisation CPU durablement élevée
+          description: Le CPU est supérieur ou égal à 90 % depuis cinq minutes.
+
+      - alert: AICopilotMemoryHigh
+        expr: ai_copilot_system_memory_usage_percent >= 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Utilisation mémoire durablement élevée
+          description: La mémoire est supérieure ou égale à 90 % depuis cinq minutes.
+
+      - alert: AICopilotDiskHigh
+        expr: ai_copilot_system_disk_usage_percent >= 90
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Espace disque presque saturé
+          description: Le disque est supérieur ou égal à 90 % depuis dix minutes.
+
+      - alert: AICopilotHTTP5xx
+        expr: sum(rate(ai_copilot_http_requests_total{status_code=~"5.."}[5m])) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Erreurs HTTP 5xx détectées
+          description: L’API retourne des erreurs serveur de manière continue.

@@ -15,6 +15,7 @@ from app.workflows.lifecycle import (
     fail_step,
     fail_workflow,
     get_workflow_step,
+    queue_workflow,
     skip_step,
     start_step,
     start_workflow,
@@ -44,6 +45,23 @@ def test_start_workflow_changes_status():
     )
 
     assert workflow.status == WorkflowStatus.RUNNING
+
+
+def test_workflow_can_be_queued_then_started():
+    workflow = queue_workflow(make_workflow())
+
+    assert workflow.status == WorkflowStatus.QUEUED
+    assert start_workflow(workflow).status == WorkflowStatus.RUNNING
+
+
+def test_only_pending_workflow_can_be_queued():
+    workflow = start_workflow(make_workflow())
+
+    with pytest.raises(
+        ValueError,
+        match="en attente",
+    ):
+        queue_workflow(workflow)
 
 
 def test_step_can_start_and_complete():

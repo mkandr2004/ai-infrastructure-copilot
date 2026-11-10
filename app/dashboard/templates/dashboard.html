@@ -33,6 +33,16 @@
         src="{{
             url_for(
                 'dashboard_static',
+                path='/dashboard-alerts.js'
+            )
+        }}"
+        defer
+    ></script>
+
+    <script
+        src="{{
+            url_for(
+                'dashboard_static',
                 path='/dashboard-chart.js'
             )
         }}"
@@ -314,6 +324,31 @@
                         </tbody>
                     </table>
                 </div>
+            </section>
+
+            <section
+                class="section alerts-section"
+                aria-labelledby="alerts-title"
+            >
+                <div class="section-heading">
+                    <div>
+                        <p class="section-label">Alertmanager + Redis</p>
+                        <h2 id="alerts-title">Alertes récentes</h2>
+                    </div>
+
+                    <button
+                        id="refresh-alerts-button"
+                        class="secondary-button"
+                        type="button"
+                    >
+                        Actualiser les alertes
+                    </button>
+                </div>
+
+                <p id="alerts-status" class="panel-status">
+                    Chargement des alertes…
+                </p>
+                <div id="alerts-list" class="alerts-list"></div>
             </section>
 
             <section
