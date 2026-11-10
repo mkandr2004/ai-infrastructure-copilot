@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     redis_key_prefix: str = "ai_copilot"
     incident_ttl_seconds: int = 604800
     workflow_ttl_seconds: int = 86400
+    workflow_queue_name: str = "investigation-workflows"
+    workflow_worker_poll_seconds: int = 2
+    alert_ttl_seconds: int = 604800
+    alert_webhook_token: SecretStr | None = None
+    notification_webhook_url: str | None = None
+    notification_timeout_seconds: float = 5.0
 
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",

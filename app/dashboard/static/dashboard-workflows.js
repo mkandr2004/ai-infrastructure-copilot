@@ -42,6 +42,7 @@ function showWorkflowsMessage(message) {
 function workflowStatusLabel(status) {
     const labels = {
         pending: "En attente",
+        queued: "En file",
         running: "En cours",
         completed: "Terminé",
         failed: "Échec",
@@ -243,7 +244,7 @@ async function submitWorkflow(event) {
     event.preventDefault();
     workflowSubmitButton.disabled = true;
     setWorkflowPanelStatus(
-        "Investigation en cours… Cette opération peut prendre plusieurs secondes.",
+        "Mise en file de l’investigation…",
     );
 
     const requestBody = {
@@ -277,13 +278,57 @@ async function submitWorkflow(event) {
         }
 
         renderWorkflow(data);
-        setWorkflowPanelStatus("Investigation terminée.", "success");
+        setWorkflowPanelStatus("Investigation mise en file.", "success");
         await loadWorkflows();
+        pollWorkflow(data.id);
     } catch (error) {
         console.error("Échec du workflow :", error);
         setWorkflowPanelStatus(error.message, "error");
     } finally {
         workflowSubmitButton.disabled = false;
+    }
+}
+
+
+async function pollWorkflow(workflowId, attemptsRemaining = 150) {
+    if (attemptsRemaining < 1) {
+        setWorkflowPanelStatus(
+            "Le workflow continue en arrière-plan. Actualise la liste plus tard.",
+        );
+        return;
+    }
+
+    try {
+        const response = await fetch(
+            `/workflows/${encodeURIComponent(workflowId)}`,
+            {headers: {Accept: "application/json"}, cache: "no-store"},
+        );
+        const workflow = await response.json();
+
+        if (!response.ok) {
+            throw new Error(workflow.detail || `Réponse HTTP ${response.status}`);
+        }
+
+        renderWorkflow(workflow);
+
+        if (["completed", "failed"].includes(workflow.status)) {
+            setWorkflowPanelStatus(
+                workflow.status === "completed"
+                    ? "Investigation terminée."
+                    : "Investigation terminée avec une erreur.",
+                workflow.status === "completed" ? "success" : "error",
+            );
+            await loadWorkflows();
+            return;
+        }
+
+        window.setTimeout(
+            () => pollWorkflow(workflowId, attemptsRemaining - 1),
+            2000,
+        );
+    } catch (error) {
+        console.error("Échec du suivi du workflow :", error);
+        setWorkflowPanelStatus(error.message, "error");
     }
 }
 

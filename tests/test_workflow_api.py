@@ -4,7 +4,6 @@ from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
-from app.db.database import get_db
 from app.main import app
 from app.schemas.workflow import (
     InvestigationWorkflowRecord,
@@ -32,10 +31,6 @@ def make_workflow(
     )
 
 
-def override_session():
-    yield object()
-
-
 def test_create_workflow_requires_confirmation():
     with patch(
         "app.workflows.router.create_redis_client"
@@ -55,51 +50,52 @@ def test_create_workflow_requires_confirmation():
     mock_redis.assert_not_called()
 
 
-def test_create_workflow_runs_investigation():
+def test_create_workflow_queues_investigation():
     fake_settings = SimpleNamespace()
     fake_redis = MagicMock()
     pending_workflow = make_workflow("pending-1").model_copy(
         update={"status": WorkflowStatus.PENDING}
     )
-    completed_workflow = make_workflow("completed-1")
+    queued_workflow = pending_workflow.model_copy(
+        update={"status": WorkflowStatus.QUEUED}
+    )
 
-    app.dependency_overrides[get_db] = override_session
+    with (
+        patch(
+            "app.workflows.router.get_settings",
+            return_value=fake_settings,
+        ),
+        patch(
+            "app.workflows.router.create_redis_client",
+            return_value=fake_redis,
+        ),
+        patch(
+            "app.workflows.router.create_workflow",
+            return_value=pending_workflow,
+        ) as mock_create,
+        patch(
+            "app.workflows.router.enqueue_workflow",
+            return_value=queued_workflow,
+        ) as mock_enqueue,
+    ):
+        response = client.post(
+            "/workflows",
+            json={
+                "problem_description": "CPU élevé",
+                "confirm_external_send": True,
+                "use_knowledge": False,
+            },
+        )
 
-    try:
-        with (
-            patch(
-                "app.workflows.router.get_settings",
-                return_value=fake_settings,
-            ),
-            patch(
-                "app.workflows.router.create_redis_client",
-                return_value=fake_redis,
-            ),
-            patch(
-                "app.workflows.router.create_workflow",
-                return_value=pending_workflow,
-            ) as mock_create,
-            patch(
-                "app.workflows.router.run_investigation_workflow",
-                return_value=completed_workflow,
-            ) as mock_run,
-        ):
-            response = client.post(
-                "/workflows",
-                json={
-                    "problem_description": "CPU élevé",
-                    "confirm_external_send": True,
-                    "use_knowledge": False,
-                },
-            )
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 200
-    assert response.json()["id"] == "completed-1"
-    assert response.json()["status"] == "completed"
+    assert response.status_code == 202
+    assert response.json()["id"] == "pending-1"
+    assert response.json()["status"] == "queued"
     mock_create.assert_called_once()
-    mock_run.assert_called_once()
+    mock_enqueue.assert_called_once_with(
+        fake_redis,
+        fake_settings,
+        pending_workflow,
+    )
     fake_redis.close.assert_called_once_with()
 
 
@@ -176,44 +172,36 @@ def test_get_workflow_returns_404_when_missing():
     fake_redis.close.assert_called_once_with()
 
 
-def test_create_workflow_translates_gemini_rate_limit():
+def test_create_workflow_returns_503_when_queue_fails():
     fake_redis = MagicMock()
     pending_workflow = make_workflow().model_copy(
         update={"status": WorkflowStatus.PENDING}
     )
-    rate_limit_error = RuntimeError("quota")
-    rate_limit_error.status_code = 429
+    with (
+        patch(
+            "app.workflows.router.create_redis_client",
+            return_value=fake_redis,
+        ),
+        patch(
+            "app.workflows.router.create_workflow",
+            return_value=pending_workflow,
+        ),
+        patch(
+            "app.workflows.router.enqueue_workflow",
+            side_effect=RuntimeError("Redis indisponible"),
+        ),
+    ):
+        response = client.post(
+            "/workflows",
+            json={
+                "problem_description": "CPU élevé",
+                "confirm_external_send": True,
+            },
+        )
 
-    app.dependency_overrides[get_db] = override_session
-
-    try:
-        with (
-            patch(
-                "app.workflows.router.create_redis_client",
-                return_value=fake_redis,
-            ),
-            patch(
-                "app.workflows.router.create_workflow",
-                return_value=pending_workflow,
-            ),
-            patch(
-                "app.workflows.router.run_investigation_workflow",
-                side_effect=rate_limit_error,
-            ),
-        ):
-            response = client.post(
-                "/workflows",
-                json={
-                    "problem_description": "CPU élevé",
-                    "confirm_external_send": True,
-                },
-            )
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 429
+    assert response.status_code == 503
     assert response.json()["detail"] == (
-        "Quota Gemini dépassé. Réessaie plus tard."
+        "La file des workflows est indisponible."
     )
     fake_redis.close.assert_called_once_with()
 

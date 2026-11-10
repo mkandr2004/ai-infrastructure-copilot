@@ -36,6 +36,53 @@ def test_prometheus_scrapes_fastapi_metrics():
         "app:8000",
     ]
 
+    assert config["rule_files"] == [
+        "/etc/prometheus/rules/*.yml",
+    ]
+    assert config["alerting"]["alertmanagers"][0][
+        "static_configs"
+    ][0]["targets"] == ["alertmanager:9093"]
+
+
+def test_prometheus_alert_rules_cover_critical_resources():
+    config = load_yaml(
+        PROJECT_ROOT
+        / "deploy"
+        / "prometheus"
+        / "rules"
+        / "alerts.yml"
+    )
+
+    rules = config["groups"][0]["rules"]
+    names = {rule["alert"] for rule in rules}
+
+    assert names == {
+        "AICopilotAPIDown",
+        "AICopilotCPUHigh",
+        "AICopilotMemoryHigh",
+        "AICopilotDiskHigh",
+        "AICopilotHTTP5xx",
+    }
+    assert all("for" in rule for rule in rules)
+
+
+def test_alertmanager_sends_authenticated_webhook():
+    template = load_yaml(
+        PROJECT_ROOT
+        / "deploy"
+        / "alertmanager"
+        / "alertmanager.yml.template"
+    )
+
+    webhook = template["receivers"][0]["webhook_configs"][0]
+
+    assert webhook["url"] == "http://app:8000/alerts/webhook"
+    assert webhook["send_resolved"] is True
+    assert webhook["http_config"]["authorization"]["type"] == "Bearer"
+    assert webhook["http_config"]["authorization"]["credentials"] == (
+        "__ALERT_WEBHOOK_TOKEN__"
+    )
+
 
 def test_grafana_datasource_targets_prometheus():
     config = load_yaml(

@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.collectors.system import collect_system_metrics
+from app.alerts.router import router as alerts_router
 from app.core.config import (
     PROJECT_ROOT,
     get_settings,
@@ -64,6 +65,7 @@ app.mount(
 app.include_router(dashboard_router)
 app.include_router(observability_router)
 app.include_router(workflows_router)
+app.include_router(alerts_router)
 
 
 def is_gemini_rate_limit_error(

@@ -15,7 +15,8 @@ Son objectif est de surveiller une infrastructure Linux, de collecter ses métri
 - **Phase 6 terminée** : conteneurisation Docker et orchestration locale avec Docker Compose.
 - **Phase 7 terminée** : exposition de métriques Prometheus et visualisation avec un dashboard Grafana provisionné automatiquement.
 - **Phase 8 terminée** : workflows d’investigation contrôlés avec étapes traçables, analyse déterministe et diagnostic Gemini.
-- **Tests automatiques** : 108 tests vérifient l’API, les stockages, le RAG, les dashboards, l’observabilité, les workflows et le déploiement sans consommer de quota Gemini.
+- **Phase 9 terminée** : exécution asynchrone des workflows, règles Prometheus, Alertmanager, mémoire Redis des alertes et notifications webhook optionnelles.
+- **Tests automatiques** : 129 tests vérifient l’API, les stockages, le RAG, les dashboards, l’observabilité, les workflows, l’alerting et le déploiement sans consommer de quota Gemini.
 
 L’application collecte l’utilisation du CPU, de la mémoire et du disque. Elle peut aussi récupérer les avertissements et erreurs de `journalctl`.
 
@@ -29,9 +30,11 @@ Les appels à Gemini nécessitent toujours une confirmation explicite. L’envoi
 
 Le dashboard web rassemble les métriques actuelles, l’historique PostgreSQL, les incidents Redis et le formulaire de diagnostic Gemini dans une interface responsive servie directement par FastAPI.
 
-Un workflow d’investigation enchaîne de manière contrôlée la collecte actuelle, l’historique PostgreSQL, les incidents Redis similaires, la documentation Qdrant, des constats CPU/mémoire/disque déterministes et un diagnostic final Gemini. Chaque étape est enregistrée dans Redis et aucune correction n’est exécutée automatiquement.
+Un workflow d’investigation est placé dans une file Redis puis traité par un worker séparé. Il enchaîne de manière contrôlée la collecte actuelle, l’historique PostgreSQL, les incidents Redis similaires, la documentation Qdrant, des constats CPU/mémoire/disque déterministes et un diagnostic final Gemini. Chaque étape est enregistrée dans Redis et aucune correction n’est exécutée automatiquement.
 
 L’API expose également des métriques au format Prometheus. Prometheus les collecte toutes les 15 secondes et Grafana fournit une vue opérationnelle sur la disponibilité, le trafic HTTP, les latences et l’utilisation des ressources.
+
+Prometheus évalue cinq règles d’alerte pour la disponibilité, le CPU, la mémoire, le disque et les erreurs HTTP 5xx. Alertmanager groupe les alertes, les transmet à un webhook FastAPI authentifié, puis l’application les conserve temporairement dans Redis et peut envoyer un résumé vers un webhook externe optionnel.
 
 ## Architecture actuelle
 
@@ -84,7 +87,9 @@ L’API expose également des métriques au format Prometheus. Prometheus les co
             │       ├──► POST /diagnose
             │       ├──► POST /workflows
             │       ├──► GET /workflows
-            │       └──► GET /workflows/{workflow_id}
+            │       ├──► GET /workflows/{workflow_id}
+            │       ├──► POST /alerts/webhook ◄── Alertmanager ◄── Prometheus
+            │       └──► GET /alerts
             │                    │
             │                    ▼
             │          métriques + problème signalé
@@ -161,7 +166,9 @@ Redis est une mémoire temporaire et non l’historique permanent des métriques
 | `app/workflows/similarity.py` | Recherche des incidents similaires par comparaison textuelle déterministe. |
 | `app/workflows/context.py` | Formate les constats et incidents historiques sans recopier leurs anciens diagnostics. |
 | `app/workflows/runner.py` | Orchestre les six étapes et persiste chaque transition. |
-| `app/workflows/router.py` | Expose la création, la liste et la lecture des workflows. |
+| `app/workflows/queue.py` | Place et retire les identifiants de workflows dans une file Redis. |
+| `app/workflows/worker.py` | Consomme la file séparément de l’API et exécute les investigations. |
+| `app/workflows/router.py` | Expose la mise en file, la liste et la lecture des workflows. |
 
 Les six étapes sont :
 
@@ -172,9 +179,9 @@ Les six étapes sont :
 5. production de constats déterministes CPU, mémoire et disque ;
 6. génération du diagnostic final avec Gemini.
 
-Les étapes possèdent les états `pending`, `running`, `completed`, `skipped` ou `failed`. Le workflow possède les états `pending`, `running`, `completed` ou `failed`. Un échec est conservé dans Redis afin de rendre visible l’étape qui a échoué. Par défaut, un workflow expire après 86 400 secondes, soit 24 heures.
+Les étapes possèdent les états `pending`, `running`, `completed`, `skipped` ou `failed`. Le workflow possède les états `pending`, `queued`, `running`, `completed` ou `failed`. Un échec est conservé dans Redis afin de rendre visible l’étape qui a échoué. Par défaut, un workflow expire après 86 400 secondes, soit 24 heures.
 
-L’exécution est volontairement synchrone dans cette version locale : la réponse HTTP est rendue lorsque le workflow est terminé ou en échec. Les constats reposent sur des seuils transparents de 80 % pour un avertissement et 90 % pour un niveau critique.
+`POST /workflows` répond immédiatement avec le statut HTTP `202` et un workflow `queued`. Le service `workflow-worker` le traite en arrière-plan, tandis que le dashboard interroge périodiquement `GET /workflows/{id}` jusqu’à l’état final. Les constats reposent sur des seuils transparents de 80 % pour un avertissement et 90 % pour un niveau critique.
 
 ## Dashboard web
 
@@ -187,6 +194,7 @@ L’exécution est volontairement synchrone dans cette version locale : la répo
 | `app/dashboard/static/dashboard-chart.js` | Dessine les tendances avec un SVG natif. |
 | `app/dashboard/static/dashboard-operations.js` | Gère Redis et le formulaire de diagnostic. |
 | `app/dashboard/static/dashboard-workflows.js` | Lance, liste et affiche les workflows d’investigation. |
+| `app/dashboard/static/dashboard-alerts.js` | Charge et affiche les alertes récentes conservées dans Redis. |
 
 Le dashboard n’ajoute aucun framework frontend ni CDN. Il utilise Jinja2, CSS, JavaScript et SVG natifs. Les contenus provenant des incidents, des workflows et des diagnostics sont insérés avec `textContent` afin de ne pas interpréter leur contenu comme du HTML.
 
@@ -206,6 +214,20 @@ Les métriques personnalisées utilisent le préfixe `ai_copilot_`. Elles couvre
 Prometheus conserve quinze jours de séries temporelles dans un volume Docker persistant. Grafana utilise Prometheus comme source par défaut et charge automatiquement le dashboard **AI Infrastructure Copilot** au démarrage.
 
 Le dashboard FastAPI et le dashboard Grafana sont complémentaires : le premier sert à utiliser l’application et à demander des diagnostics, tandis que le second sert à observer son fonctionnement dans le temps.
+
+## Alertes Prometheus et Alertmanager
+
+| Fichier | Rôle |
+| --- | --- |
+| `deploy/prometheus/rules/alerts.yml` | Définit les cinq règles d’alerte et leur durée minimale. |
+| `deploy/alertmanager/alertmanager.yml.template` | Groupe les alertes et configure le webhook applicatif authentifié. |
+| `docker/render-alertmanager-config.sh` | Injecte le secret au démarrage sans le versionner dans Git. |
+| `app/alerts/router.py` | Authentifie le webhook et expose `GET /alerts`. |
+| `app/alerts/storage.py` | Normalise et conserve temporairement les alertes dans Redis. |
+| `app/alerts/notifications.py` | Envoie facultativement un résumé vers un webhook externe. |
+| `app/schemas/alert.py` | Valide les messages Alertmanager et les réponses de l’API. |
+
+Une alerte n’est pas déclenchée par une pointe unique : chaque règle possède une durée `for`. Alertmanager envoie également les résolutions. Le secret `ALERT_WEBHOOK_TOKEN` doit être long et aléatoire ; il est comparé de manière sûre par l’API. Une panne du webhook de notification externe n’empêche pas la conservation de l’alerte dans Redis.
 
 ## Technologies utilisées
 
@@ -227,6 +249,7 @@ Le dashboard FastAPI et le dashboard Grafana sont complémentaires : le premier 
 - Prometheus
 - prometheus-client
 - Grafana
+- Alertmanager
 - SVG natif
 - pytest et TestClient
 - Git
@@ -328,6 +351,12 @@ Compléter ensuite `.env` :
     REDIS_KEY_PREFIX=ai_copilot
     INCIDENT_TTL_SECONDS=604800
     WORKFLOW_TTL_SECONDS=86400
+    WORKFLOW_QUEUE_NAME=investigation-workflows
+    WORKFLOW_WORKER_POLL_SECONDS=2
+    ALERT_TTL_SECONDS=604800
+    ALERT_WEBHOOK_TOKEN=UN_SECRET_LONG_ET_ALEATOIRE
+    NOTIFICATION_WEBHOOK_URL=
+    NOTIFICATION_TIMEOUT_SECONDS=5
 
 `GEMINI_API_KEY` est nécessaire pour les diagnostics, l’indexation et les recherches documentaires.
 
@@ -337,7 +366,7 @@ La configuration PostgreSQL est nécessaire pour charger l’API et utiliser la 
 
 La configuration Redis est nécessaire pour enregistrer ou consulter les incidents et workflows temporaires. Laisser `REDIS_PASSWORD` vide lorsque le serveur local n’exige pas d’authentification.
 
-`INCIDENT_TTL_SECONDS` contrôle la durée de conservation des incidents et `WORKFLOW_TTL_SECONDS` celle des workflows.
+`INCIDENT_TTL_SECONDS`, `WORKFLOW_TTL_SECONDS` et `ALERT_TTL_SECONDS` contrôlent les durées de conservation. `NOTIFICATION_WEBHOOK_URL` est facultative. Générer par exemple le secret Alertmanager avec `openssl rand -hex 32`.
 
 Le fichier `.env` contient des secrets et ne doit jamais être ajouté à Git.
 
@@ -373,15 +402,17 @@ Une réindexation complète recalcule actuellement tous les embeddings et peut d
 
 ## Déploiement avec Docker Compose
 
-Docker Compose lance six services isolés :
+Docker Compose lance huit services isolés :
 
 | Service | Rôle |
 | --- | --- |
 | `app` | Sert FastAPI, le dashboard et l’API sur le port local configuré. |
 | `monitoring` | Collecte périodiquement les métriques et les écrit dans PostgreSQL. |
+| `workflow-worker` | Consomme la file Redis et exécute les investigations en arrière-plan. |
 | `postgres` | Conserve l’historique permanent des métriques. |
 | `redis` | Conserve temporairement les incidents diagnostiqués. |
 | `prometheus` | Collecte et conserve les métriques opérationnelles de l’API. |
+| `alertmanager` | Groupe les alertes et les transmet au webhook authentifié de l’API. |
 | `grafana` | Visualise les séries Prometheus dans un dashboard provisionné. |
 
 Qdrant reste embarqué dans le conteneur applicatif et écrit son index dans un volume Docker persistant.
@@ -404,6 +435,8 @@ Créer la configuration locale si elle n’existe pas encore :
 
 `POSTGRES_PASSWORD` doit obligatoirement contenir un vrai mot de passe. `GEMINI_API_KEY` reste optionnelle tant qu’aucun diagnostic ou embedding externe n’est demandé.
 
+`ALERT_WEBHOOK_TOKEN` et `GRAFANA_ADMIN_PASSWORD` sont également obligatoires avec Compose. Ils doivent contenir des secrets distincts et non versionnés.
+
 Les variables `POSTGRES_HOST` et `REDIS_HOST` peuvent rester à `localhost` pour l’exécution native. Compose les remplace automatiquement par les noms internes `postgres` et `redis` dans les conteneurs.
 
 Les paramètres spécifiques au déploiement sont :
@@ -413,13 +446,14 @@ Les paramètres spécifiques au déploiement sont :
 | `APP_PORT` | `8000` | Port local du dashboard et de l’API. |
 | `MONITORING_INTERVAL_SECONDS` | `60` | Intervalle entre deux mesures enregistrées. |
 | `PROMETHEUS_PORT` | `9090` | Port local de l’interface Prometheus. |
+| `ALERTMANAGER_PORT` | `9093` | Port local de l’interface Alertmanager. |
 | `GRAFANA_PORT` | `3000` | Port local de l’interface Grafana. |
 | `GRAFANA_ADMIN_USER` | `admin` | Identifiant administrateur initial de Grafana. |
 | `GRAFANA_ADMIN_PASSWORD` | aucune | Mot de passe administrateur Grafana obligatoire dans `.env`. |
 
 ### Démarrage
 
-Construire l’image et démarrer les six services :
+Construire l’image et démarrer les huit services :
 
     docker compose up --build --detach
 
@@ -432,6 +466,7 @@ Les interfaces locales sont disponibles aux adresses suivantes :
 
 - dashboard applicatif : <http://127.0.0.1:8000/dashboard> ;
 - Prometheus : <http://127.0.0.1:9090> ;
+- Alertmanager : <http://127.0.0.1:9093> ;
 - Grafana : <http://127.0.0.1:3000>.
 
 Au premier démarrage, l’entrypoint attend PostgreSQL puis crée les tables absentes. Les conteneurs applicatifs sont exécutés avec un utilisateur non privilégié. PostgreSQL, Redis, Qdrant, Prometheus et Grafana utilisent des volumes nommés persistants.
@@ -452,7 +487,7 @@ Cette opération utilise la clé Gemini configurée et peut consommer du quota d
 
 Suivre les journaux applicatifs :
 
-    docker compose logs --follow app monitoring
+    docker compose logs --follow app monitoring workflow-worker alertmanager
 
 Arrêter les conteneurs sans supprimer les données :
 
@@ -517,9 +552,11 @@ La documentation interactive est disponible sur <http://127.0.0.1:8000/docs>.
 | `POST /diagnose` | Demander un diagnostic Gemini, avec RAG optionnel. |
 | `GET /incidents` | Lister les incidents temporaires du plus récent au plus ancien. |
 | `GET /incidents/{incident_id}` | Lire un incident temporaire par son identifiant. |
-| `POST /workflows` | Créer et exécuter un workflow d’investigation. |
+| `POST /workflows` | Créer et mettre en file un workflow d’investigation. |
 | `GET /workflows` | Lister les workflows temporaires du plus récent au plus ancien. |
 | `GET /workflows/{workflow_id}` | Lire un workflow et le résultat de chaque étape. |
+| `POST /alerts/webhook` | Recevoir un lot Alertmanager avec authentification Bearer. |
+| `GET /alerts` | Lister les alertes temporaires, avec filtre de statut optionnel. |
 
 Consulter les dix mesures les plus récentes :
 
@@ -609,6 +646,17 @@ La confirmation externe est obligatoire, car le diagnostic final utilise Gemini 
 
 Les descriptions des incidents historiques sont traitées comme des données non fiables. Leurs anciens diagnostics ne sont pas injectés dans le nouveau prompt. Les métriques actuelles restent prioritaires.
 
+La création retourne immédiatement un statut `queued`. Le worker réalise ensuite l’investigation. Le client doit relire le workflow jusqu’à `completed` ou `failed` ; le dashboard effectue ce suivi automatiquement.
+
+### Alertes récentes
+
+Consulter toutes les alertes ou uniquement celles encore actives :
+
+    curl "http://127.0.0.1:8000/alerts?limit=20"
+    curl "http://127.0.0.1:8000/alerts?limit=20&status=firing"
+
+La route d’écriture est réservée à Alertmanager et exige `Authorization: Bearer ...`. Elle ne doit pas être appelée par le dashboard.
+
 ## Tests
 
 Installer les dépendances de développement :
@@ -619,7 +667,7 @@ Lancer les tests :
 
     python -m pytest -q
 
-Les 108 tests couvrent notamment :
+Les 129 tests couvrent notamment :
 
 - les routes principales de l’API ;
 - la structure, la sécurité et les dépendances du déploiement Docker Compose ;
@@ -651,6 +699,10 @@ Les 108 tests couvrent notamment :
 - la recherche déterministe d’incidents similaires ;
 - la séparation du contexte d’investigation dans le prompt ;
 - l’orchestration complète, les erreurs et les routes des workflows.
+- la file Redis, le worker asynchrone et le suivi du statut `queued` ;
+- les règles Prometheus et la configuration Alertmanager ;
+- l’authentification du webhook, le stockage Redis et la notification optionnelle ;
+- l’affichage des alertes dans le dashboard.
 
 Gemini et Redis sont simulés pendant les tests de l’API. Qdrant utilise une base en mémoire et les opérations PostgreSQL sont isolées ou simulées.
 
@@ -674,6 +726,9 @@ Le rendu HTML et la disponibilité des fichiers CSS et JavaScript du dashboard s
 - les incidents enregistrés ne contiennent pas les logs bruts ;
 - chaque incident possède une durée de conservation limitée ;
 - chaque workflow possède une durée de conservation limitée ;
+- chaque alerte possède une durée de conservation limitée ;
+- le webhook Alertmanager exige un secret Bearer partagé qui n’est pas versionné ;
+- une panne de notification externe ne supprime pas l’alerte locale ;
 - les anciens diagnostics ne sont pas réinjectés dans un nouveau workflow ;
 - chaque étape du workflow est limitée à des lectures et des analyses ;
 - une erreur de quota Gemini reçoit une réponse HTTP `429` explicite ;
@@ -701,9 +756,9 @@ Le rendu HTML et la disponibilité des fichiers CSS et JavaScript du dashboard s
 - Le dashboard ne possède pas encore d’authentification et doit rester accessible uniquement depuis l’hôte local.
 - Les graphiques SVG n’offrent pas encore de zoom ou d’infobulles interactives.
 - Dans Docker, les métriques décrivent le conteneur applicatif et non l’ensemble de la machine hôte.
-- Prometheus conserve actuellement quinze jours de métriques et aucune règle d’alerte n’est encore configurée.
+- Prometheus conserve actuellement quinze jours de métriques ; les seuils d’alerte sont génériques et doivent être adaptés à chaque environnement.
 - Le dashboard Grafana est provisionné en lecture seule depuis les fichiers versionnés du dépôt.
-- Les workflows sont synchrones et occupent la requête HTTP jusqu’à la réponse de Gemini.
+- La file Redis locale convient à un worker unique ; une production distribuée nécessiterait des mécanismes supplémentaires de réservation, nouvelle tentative et file d’échec.
 - La similarité des incidents repose actuellement sur les mots partagés, sans embedding supplémentaire.
 - Les seuils de 80 % et 90 % sont génériques et devront être adaptés à chaque infrastructure.
 - `journalctl` n’est généralement pas disponible dans le conteneur applicatif.
@@ -719,4 +774,4 @@ Le rendu HTML et la disponibilité des fichiers CSS et JavaScript du dashboard s
 - Phase 6 terminée : Docker et déploiement local avec Compose
 - Phase 7 terminée : métriques Prometheus et dashboard Grafana
 - Phase 8 terminée : workflows d’investigation contrôlés et analyseurs spécialisés
-- Phase 9 prévue : alertes Prometheus, notifications et exécution asynchrone
+- Phase 9 terminée : alertes Prometheus, Alertmanager, notifications et exécution asynchrone
