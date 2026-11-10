@@ -72,6 +72,9 @@ def test_compose_keeps_data_services_internal():
     assert app_environment["QDRANT_PATH"] == (
         "/app/data/qdrant"
     )
+    assert app_environment["WORKFLOW_TTL_SECONDS"] == (
+        "${WORKFLOW_TTL_SECONDS:-86400}"
+    )
 
 
 def test_compose_waits_for_healthy_dependencies():
