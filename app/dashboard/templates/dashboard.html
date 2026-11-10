@@ -48,6 +48,16 @@
         }}"
         defer
     ></script>
+
+    <script
+        src="{{
+            url_for(
+                'dashboard_static',
+                path='/dashboard-workflows.js'
+            )
+        }}"
+        defer
+    ></script>
 </head>
 
 <body>
@@ -368,6 +378,121 @@
                         </div>
                     </article>
                 </div>
+            </section>
+
+            <section
+                class="section workflow-section"
+                aria-labelledby="workflow-title"
+            >
+                <div class="section-heading">
+                    <div>
+                        <p class="section-label">Investigation contrôlée</p>
+                        <h2 id="workflow-title">Workflows récents</h2>
+                    </div>
+
+                    <button
+                        id="refresh-workflows-button"
+                        class="secondary-button"
+                        type="button"
+                    >
+                        Actualiser les workflows
+                    </button>
+                </div>
+
+                <p id="workflows-status" class="panel-status">
+                    Chargement des workflows…
+                </p>
+
+                <div class="workflow-layout">
+                    <form id="workflow-form" class="diagnosis-form workflow-form">
+                        <label
+                            class="form-field"
+                            for="workflow-problem-description"
+                        >
+                            <span>Problème à investiguer</span>
+                            <textarea
+                                id="workflow-problem-description"
+                                maxlength="2000"
+                                rows="5"
+                                required
+                                placeholder="Décris le symptôme, sa durée et son impact."
+                            ></textarea>
+                        </label>
+
+                        <fieldset class="diagnosis-options">
+                            <legend>Options du workflow</legend>
+
+                            <label class="check-option">
+                                <input
+                                    id="workflow-use-knowledge"
+                                    type="checkbox"
+                                    checked
+                                >
+                                Utiliser la documentation RAG
+                            </label>
+
+                            <label class="check-option check-option-warning">
+                                <input
+                                    id="workflow-include-logs"
+                                    type="checkbox"
+                                >
+                                Autoriser l’envoi des logs à Gemini
+                            </label>
+
+                            <label class="check-option check-option-confirm">
+                                <input
+                                    id="workflow-confirm-external-send"
+                                    type="checkbox"
+                                    required
+                                >
+                                Je confirme explicitement l’envoi à Gemini
+                            </label>
+                        </fieldset>
+
+                        <button
+                            id="workflow-submit-button"
+                            class="primary-button"
+                            type="submit"
+                        >
+                            Lancer l’investigation
+                        </button>
+                    </form>
+
+                    <div
+                        id="workflows-list"
+                        class="workflow-list"
+                    ></div>
+                </div>
+
+                <article
+                    id="workflow-result"
+                    class="workflow-result"
+                    hidden
+                >
+                    <div class="result-heading">
+                        <div>
+                            <p class="section-label">Workflow sélectionné</p>
+                            <h3 id="workflow-result-title"></h3>
+                        </div>
+                        <span
+                            id="workflow-result-status"
+                            class="workflow-status-badge"
+                        ></span>
+                    </div>
+
+                    <p id="workflow-result-meta" class="detail-meta"></p>
+                    <p><strong>Sources :</strong> <span id="workflow-result-sources"></span></p>
+                    <p><strong>Incidents similaires :</strong> <span id="workflow-result-incidents"></span></p>
+
+                    <h4>Étapes</h4>
+                    <ol id="workflow-result-steps" class="workflow-steps"></ol>
+
+                    <h4>Constats déterministes</h4>
+                    <div id="workflow-result-findings" class="workflow-findings"></div>
+
+                    <h4>Diagnostic final</h4>
+                    <pre id="workflow-result-diagnosis" class="diagnosis-text"></pre>
+                </article>
             </section>
 
             <section

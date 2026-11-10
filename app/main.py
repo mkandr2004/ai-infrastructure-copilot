@@ -35,6 +35,9 @@ from app.services.diagnosis import (
     request_diagnostic,
 )
 from app.services.metrics import list_metric_snapshots
+from app.workflows.router import (
+    router as workflows_router,
+)
 
 
 DASHBOARD_STATIC_DIRECTORY = (
@@ -60,6 +63,7 @@ app.mount(
 
 app.include_router(dashboard_router)
 app.include_router(observability_router)
+app.include_router(workflows_router)
 
 
 def is_gemini_rate_limit_error(

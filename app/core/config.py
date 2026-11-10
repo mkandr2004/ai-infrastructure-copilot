@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     redis_password: SecretStr | None = None
     redis_key_prefix: str = "ai_copilot"
     incident_ttl_seconds: int = 604800
+    workflow_ttl_seconds: int = 86400
 
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",

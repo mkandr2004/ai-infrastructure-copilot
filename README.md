@@ -2,7 +2,7 @@
 
 AI Infrastructure Copilot est un projet personnel orienté AI Engineering, MLOps et observabilité.
 
-Son objectif est de surveiller une infrastructure Linux, de collecter ses métriques et ses logs, de conserver un historique dans PostgreSQL, puis d’utiliser un modèle d’intelligence artificielle enrichi par une documentation technique locale pour produire des diagnostics prudents et structurés. Les incidents diagnostiqués peuvent être mémorisés temporairement dans Redis. Prometheus collecte les métriques opérationnelles de l’API et Grafana les présente dans un dashboard dédié.
+Son objectif est de surveiller une infrastructure Linux, de collecter ses métriques et ses logs, de conserver un historique dans PostgreSQL, puis d’utiliser un modèle d’intelligence artificielle enrichi par une documentation technique locale pour produire des diagnostics prudents et structurés. Les incidents et les workflows d’investigation peuvent être mémorisés temporairement dans Redis. Prometheus collecte les métriques opérationnelles de l’API et Grafana les présente dans un dashboard dédié.
 
 ## État actuel
 
@@ -14,7 +14,8 @@ Son objectif est de surveiller une infrastructure Linux, de collecter ses métri
 - **Phase 5 terminée** : dashboard web pour les métriques, l’historique, les incidents et les diagnostics.
 - **Phase 6 terminée** : conteneurisation Docker et orchestration locale avec Docker Compose.
 - **Phase 7 terminée** : exposition de métriques Prometheus et visualisation avec un dashboard Grafana provisionné automatiquement.
-- **Tests automatiques** : 63 tests vérifient l’API, les stockages, le RAG, les dashboards, l’observabilité et le déploiement sans consommer de quota Gemini.
+- **Phase 8 terminée** : workflows d’investigation contrôlés avec étapes traçables, analyse déterministe et diagnostic Gemini.
+- **Tests automatiques** : 108 tests vérifient l’API, les stockages, le RAG, les dashboards, l’observabilité, les workflows et le déploiement sans consommer de quota Gemini.
 
 L’application collecte l’utilisation du CPU, de la mémoire et du disque. Elle peut aussi récupérer les avertissements et erreurs de `journalctl`.
 
@@ -27,6 +28,8 @@ Le diagnostic peut rechercher des passages pertinents dans une documentation loc
 Les appels à Gemini nécessitent toujours une confirmation explicite. L’envoi des logs est désactivé par défaut.
 
 Le dashboard web rassemble les métriques actuelles, l’historique PostgreSQL, les incidents Redis et le formulaire de diagnostic Gemini dans une interface responsive servie directement par FastAPI.
+
+Un workflow d’investigation enchaîne de manière contrôlée la collecte actuelle, l’historique PostgreSQL, les incidents Redis similaires, la documentation Qdrant, des constats CPU/mémoire/disque déterministes et un diagnostic final Gemini. Chaque étape est enregistrée dans Redis et aucune correction n’est exécutée automatiquement.
 
 L’API expose également des métriques au format Prometheus. Prometheus les collecte toutes les 15 secondes et Grafana fournit une vue opérationnelle sur la disponibilité, le trafic HTTP, les latences et l’utilisation des ressources.
 
@@ -78,7 +81,10 @@ L’API expose également des métriques au format Prometheus. Prometheus les co
             │       ├──► GET /metrics/history
             │       ├──► GET /incidents
             │       ├──► GET /incidents/{incident_id}
-            │       └──► POST /diagnose
+            │       ├──► POST /diagnose
+            │       ├──► POST /workflows
+            │       ├──► GET /workflows
+            │       └──► GET /workflows/{workflow_id}
             │                    │
             │                    ▼
             │          métriques + problème signalé
@@ -144,6 +150,32 @@ L’enregistrement est optionnel et doit être demandé avec `save_incident: tru
 
 Redis est une mémoire temporaire et non l’historique permanent des métriques. PostgreSQL reste responsable des mesures collectées dans le temps.
 
+## Workflows d’investigation
+
+| Fichier | Rôle |
+| --- | --- |
+| `app/schemas/workflow.py` | Définit les états, étapes, constats et réponses d’un workflow. |
+| `app/workflows/storage.py` | Crée, met à jour, lit et liste les workflows dans Redis. |
+| `app/workflows/lifecycle.py` | Contrôle les transitions d’état du workflow et de ses étapes. |
+| `app/workflows/analyzers.py` | Produit des constats CPU, mémoire et disque selon des seuils explicites. |
+| `app/workflows/similarity.py` | Recherche des incidents similaires par comparaison textuelle déterministe. |
+| `app/workflows/context.py` | Formate les constats et incidents historiques sans recopier leurs anciens diagnostics. |
+| `app/workflows/runner.py` | Orchestre les six étapes et persiste chaque transition. |
+| `app/workflows/router.py` | Expose la création, la liste et la lecture des workflows. |
+
+Les six étapes sont :
+
+1. collecte des métriques actuelles ;
+2. analyse des cent dernières mesures PostgreSQL ;
+3. recherche d’incidents Redis similaires ;
+4. recherche documentaire Qdrant optionnelle ;
+5. production de constats déterministes CPU, mémoire et disque ;
+6. génération du diagnostic final avec Gemini.
+
+Les étapes possèdent les états `pending`, `running`, `completed`, `skipped` ou `failed`. Le workflow possède les états `pending`, `running`, `completed` ou `failed`. Un échec est conservé dans Redis afin de rendre visible l’étape qui a échoué. Par défaut, un workflow expire après 86 400 secondes, soit 24 heures.
+
+L’exécution est volontairement synchrone dans cette version locale : la réponse HTTP est rendue lorsque le workflow est terminé ou en échec. Les constats reposent sur des seuils transparents de 80 % pour un avertissement et 90 % pour un niveau critique.
+
 ## Dashboard web
 
 | Fichier | Rôle |
@@ -154,8 +186,9 @@ Redis est une mémoire temporaire et non l’historique permanent des métriques
 | `app/dashboard/static/dashboard.js` | Charge les métriques actuelles et l’historique. |
 | `app/dashboard/static/dashboard-chart.js` | Dessine les tendances avec un SVG natif. |
 | `app/dashboard/static/dashboard-operations.js` | Gère Redis et le formulaire de diagnostic. |
+| `app/dashboard/static/dashboard-workflows.js` | Lance, liste et affiche les workflows d’investigation. |
 
-Le dashboard n’ajoute aucun framework frontend ni CDN. Il utilise Jinja2, CSS, JavaScript et SVG natifs. Les contenus provenant des incidents et des diagnostics sont insérés avec `textContent` afin de ne pas interpréter leur contenu comme du HTML.
+Le dashboard n’ajoute aucun framework frontend ni CDN. Il utilise Jinja2, CSS, JavaScript et SVG natifs. Les contenus provenant des incidents, des workflows et des diagnostics sont insérés avec `textContent` afin de ne pas interpréter leur contenu comme du HTML.
 
 ## Observabilité Prometheus et Grafana
 
@@ -294,6 +327,7 @@ Compléter ensuite `.env` :
     REDIS_PASSWORD=
     REDIS_KEY_PREFIX=ai_copilot
     INCIDENT_TTL_SECONDS=604800
+    WORKFLOW_TTL_SECONDS=86400
 
 `GEMINI_API_KEY` est nécessaire pour les diagnostics, l’indexation et les recherches documentaires.
 
@@ -301,7 +335,9 @@ Compléter ensuite `.env` :
 
 La configuration PostgreSQL est nécessaire pour charger l’API et utiliser la surveillance.
 
-La configuration Redis est nécessaire pour enregistrer ou consulter les incidents temporaires. Laisser `REDIS_PASSWORD` vide lorsque le serveur local n’exige pas d’authentification.
+La configuration Redis est nécessaire pour enregistrer ou consulter les incidents et workflows temporaires. Laisser `REDIS_PASSWORD` vide lorsque le serveur local n’exige pas d’authentification.
+
+`INCIDENT_TTL_SECONDS` contrôle la durée de conservation des incidents et `WORKFLOW_TTL_SECONDS` celle des workflows.
 
 Le fichier `.env` contient des secrets et ne doit jamais être ajouté à Git.
 
@@ -481,6 +517,9 @@ La documentation interactive est disponible sur <http://127.0.0.1:8000/docs>.
 | `POST /diagnose` | Demander un diagnostic Gemini, avec RAG optionnel. |
 | `GET /incidents` | Lister les incidents temporaires du plus récent au plus ancien. |
 | `GET /incidents/{incident_id}` | Lire un incident temporaire par son identifiant. |
+| `POST /workflows` | Créer et exécuter un workflow d’investigation. |
+| `GET /workflows` | Lister les workflows temporaires du plus récent au plus ancien. |
+| `GET /workflows/{workflow_id}` | Lire un workflow et le résultat de chaque étape. |
 
 Consulter les dix mesures les plus récentes :
 
@@ -494,7 +533,7 @@ Après le démarrage d’Uvicorn, ouvrir :
 
     http://127.0.0.1:8000/dashboard
 
-Le dashboard permet de consulter les métriques actuelles, visualiser l’historique PostgreSQL, lire les incidents Redis et demander un diagnostic Gemini. L’envoi des logs et l’enregistrement Redis restent des choix explicites.
+Le dashboard permet de consulter les métriques actuelles, visualiser l’historique PostgreSQL, lire les incidents Redis, lancer des workflows d’investigation et demander un diagnostic Gemini. L’envoi des logs et les appels externes restent des choix explicites.
 
 ### Diagnostic sans recherche documentaire
 
@@ -548,6 +587,28 @@ La réponse contient également :
 
 Si aucun passage ne dépasse le seuil de pertinence, le diagnostic continue sans contexte documentaire.
 
+### Workflow d’investigation
+
+Lancer une investigation complète sans envoyer les logs :
+
+    curl -X POST "http://127.0.0.1:8000/workflows" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "problem_description": "Le CPU reste régulièrement à 95 %.",
+        "confirm_external_send": true,
+        "include_logs": false,
+        "use_knowledge": true
+      }'
+
+Consulter ensuite les workflows temporaires :
+
+    curl "http://127.0.0.1:8000/workflows?limit=20"
+    curl "http://127.0.0.1:8000/workflows/IDENTIFIANT_WORKFLOW"
+
+La confirmation externe est obligatoire, car le diagnostic final utilise Gemini et la recherche documentaire peut créer un embedding externe. Lorsque `use_knowledge` vaut `false`, l’étape documentaire est enregistrée avec l’état `skipped`.
+
+Les descriptions des incidents historiques sont traitées comme des données non fiables. Leurs anciens diagnostics ne sont pas injectés dans le nouveau prompt. Les métriques actuelles restent prioritaires.
+
 ## Tests
 
 Installer les dépendances de développement :
@@ -558,7 +619,7 @@ Lancer les tests :
 
     python -m pytest -q
 
-Les 63 tests couvrent notamment :
+Les 108 tests couvrent notamment :
 
 - les routes principales de l’API ;
 - la structure, la sécurité et les dépendances du déploiement Docker Compose ;
@@ -583,6 +644,13 @@ Les 63 tests couvrent notamment :
 - la connexion Redis simulée ;
 - l’enregistrement, l’expiration, la lecture et la liste des incidents ;
 - le comportement de l’API lorsque Redis est indisponible.
+- la validation des schémas de workflow ;
+- le stockage, l’index et l’expiration Redis des workflows ;
+- les transitions contrôlées des étapes ;
+- les seuils des analyseurs CPU, mémoire et disque ;
+- la recherche déterministe d’incidents similaires ;
+- la séparation du contexte d’investigation dans le prompt ;
+- l’orchestration complète, les erreurs et les routes des workflows.
 
 Gemini et Redis sont simulés pendant les tests de l’API. Qdrant utilise une base en mémoire et les opérations PostgreSQL sont isolées ou simulées.
 
@@ -605,6 +673,9 @@ Le rendu HTML et la disponibilité des fichiers CSS et JavaScript du dashboard s
 - l’enregistrement d’un incident est désactivé par défaut ;
 - les incidents enregistrés ne contiennent pas les logs bruts ;
 - chaque incident possède une durée de conservation limitée ;
+- chaque workflow possède une durée de conservation limitée ;
+- les anciens diagnostics ne sont pas réinjectés dans un nouveau workflow ;
+- chaque étape du workflow est limitée à des lectures et des analyses ;
 - une erreur de quota Gemini reçoit une réponse HTTP `429` explicite ;
 - aucune action corrective n’est exécutée automatiquement ;
 - le dashboard exige une confirmation explicite avant l’appel à Gemini ;
@@ -622,7 +693,7 @@ Le rendu HTML et la disponibilité des fichiers CSS et JavaScript du dashboard s
 - Une réindexation recalcule tous les embeddings, même si certains passages n’ont pas changé.
 - Le seuil de pertinence `0.72` est empirique et devra être réévalué lorsque le corpus documentaire grandira.
 - Le corpus actuel couvre principalement les incidents CPU, mémoire et disque.
-- Les diagnostics reposent sur des mesures ponctuelles sauf si l’historique est consulté séparément.
+- Le diagnostic rapide repose sur une mesure ponctuelle ; le workflow analyse jusqu’aux cent dernières mesures PostgreSQL.
 - L’application propose des vérifications, mais n’exécute aucune correction automatique.
 - Redis est utilisé comme mémoire temporaire locale et non comme stockage d’archive permanent.
 - Les routes d’incidents ne possèdent pas encore d’authentification et sont destinées à un environnement local de développement.
@@ -632,6 +703,9 @@ Le rendu HTML et la disponibilité des fichiers CSS et JavaScript du dashboard s
 - Dans Docker, les métriques décrivent le conteneur applicatif et non l’ensemble de la machine hôte.
 - Prometheus conserve actuellement quinze jours de métriques et aucune règle d’alerte n’est encore configurée.
 - Le dashboard Grafana est provisionné en lecture seule depuis les fichiers versionnés du dépôt.
+- Les workflows sont synchrones et occupent la requête HTTP jusqu’à la réponse de Gemini.
+- La similarité des incidents repose actuellement sur les mots partagés, sans embedding supplémentaire.
+- Les seuils de 80 % et 90 % sont génériques et devront être adaptés à chaque infrastructure.
 - `journalctl` n’est généralement pas disponible dans le conteneur applicatif.
 
 ## Roadmap
@@ -644,4 +718,5 @@ Le rendu HTML et la disponibilité des fichiers CSS et JavaScript du dashboard s
 - Phase 5 terminée : dashboard web opérationnel
 - Phase 6 terminée : Docker et déploiement local avec Compose
 - Phase 7 terminée : métriques Prometheus et dashboard Grafana
-- Phase 8 prévue : workflows et agents optionnels
+- Phase 8 terminée : workflows d’investigation contrôlés et analyseurs spécialisés
+- Phase 9 prévue : alertes Prometheus, notifications et exécution asynchrone
